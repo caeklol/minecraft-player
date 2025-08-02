@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, io, path::{Path, PathBuf}};
+use std::{collections::HashMap, fs, io, path::{Path, PathBuf}, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
 
 use futures::{stream, StreamExt};
 use bytes::Bytes;
@@ -42,15 +42,15 @@ fn visit_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-async fn find_version(target_version: Option<String>) -> Result<Version, Error> {
+async fn find_version(target_version: &Option<String>) -> Result<Version, Error> {
     println!("fetching version manifest...");
     let manifest = assets::fetch_version_manifest().await?;
     println!("fetched version manifest");
 
     return Ok(match target_version {
         Some(version_str) => {
-            let possible_versions = manifest.versions.iter().filter(|v| v.id.contains(&version_str)).collect::<Vec<&Version>>();
-            let exact_version = manifest.versions.iter().find(|v| v.id == version_str);
+            let possible_versions = manifest.versions.iter().filter(|v| v.id.contains(version_str)).collect::<Vec<&Version>>();
+            let exact_version = manifest.versions.iter().find(|v| v.id == *version_str);
 
             if possible_versions.is_empty() {
                 println!("could not find a matching version to `{}`", version_str);
@@ -69,8 +69,8 @@ async fn find_version(target_version: Option<String>) -> Result<Version, Error> 
 
 }
 
-async fn load_and_update_sounds(args: Args) -> Result<HashMap<PathBuf, Bytes>, Error> {
-    let version = find_version(args.target_version).await?;
+async fn load_and_update_sounds(args: &Args) -> Result<HashMap<PathBuf, Bytes>, Error> {
+    let version = find_version(&args.target_version).await?;
     
     println!("fetching asset index...");
     let asset_index = assets::fetch_asset_index(&version).await?;
@@ -133,13 +133,42 @@ async fn load_and_update_sounds(args: Args) -> Result<HashMap<PathBuf, Bytes>, E
     if !remote_objects.is_empty() {
         println!("fetching remote assets...");
 
-        let request_results: Vec<(PathBuf, Result<Bytes, reqwest::Error>)> = stream::iter(remote_objects)
-            .map(|(key, val)| async move {
-                (key, assets::fetch_asset(&val.hash).await)
+        let total_requests = Arc::new(AtomicUsize::new(0));
+        let errored_requests = Arc::new(AtomicUsize::new(0));
+
+        // your computer DESERVES to panic if `u32` > `usize` and you are running this. that thing should have left a long time ago. picked
+        // up its little feet and ran
+        let request_len_digits: usize = remote_objects.len().checked_ilog10().unwrap().try_into().unwrap();
+
+        let request_results: Vec<(PathBuf, Result<Bytes, Error>)> = stream::iter(remote_objects)
+            .map(|(key, val)| {
+            let total_requests = total_requests.clone();
+            let errored_requests = errored_requests.clone();
+            async move {
+                let res = (key, assets::fetch_asset(&val.hash).await);
+
+                let total = total_requests.load(Ordering::Relaxed);
+                total_requests.store(total+1, Ordering::Relaxed); 
+                let errored = errored_requests.load(Ordering::Relaxed);
+                if res.1.is_err() { 
+                    errored_requests.store(errored+1, Ordering::Relaxed);
+                }
+
+                let errored = errored_requests.load(Ordering::Relaxed);
+
+
+                print!("total: {:>width$} | err: {:>width$}\r", total+1, errored, width = request_len_digits);
+
+                res
+            }
             })
             .buffer_unordered(512)
             .collect()
             .await;
+
+        let total = total_requests.load(Ordering::Relaxed);
+        let errored = errored_requests.load(Ordering::Relaxed);
+        println!("total: {:>width$} | err: {:>width$}", total, errored, width = request_len_digits);
 
         for (sound_path, bytes_res) in request_results {
             match bytes_res {
@@ -156,8 +185,6 @@ async fn load_and_update_sounds(args: Args) -> Result<HashMap<PathBuf, Bytes>, E
         }
     }
 
-    println!("sound assets are up to date!");
-
     return Ok(sound_assets);
 }
 
@@ -165,8 +192,11 @@ async fn load_and_update_sounds(args: Args) -> Result<HashMap<PathBuf, Bytes>, E
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
 
-    let sounds = load_and_update_sounds(args).await?;
+    let sounds = load_and_update_sounds(&args).await?;
+    println!("sound assets are up to date!");
 
-    println!("all sounds loaded into memory!");
+    println!("reading target file");
+    let target = tokio::fs::read(args.input).await?;
+
     return Ok(());
 }

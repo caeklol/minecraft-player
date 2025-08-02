@@ -1,9 +1,10 @@
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, hash::Hash};
 use bytes::Bytes;
 
-use reqwest::Error;
+use anyhow::{Error, anyhow};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
+use sha1_smol::Sha1;
 
 static VERSION_MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 static ASSET_URL: &str = "https://resources.download.minecraft.net";
@@ -88,9 +89,18 @@ pub async fn fetch_asset_index(version: &Version) -> Result<AssetIndex, Error> {
 }
 
 pub async fn fetch_asset(hash: &str) -> Result<Bytes, Error> {
-    reqwest::get(format!("{}/{}/{}", ASSET_URL, &hash[0..2], hash))
+    let mut hasher = Sha1::new();
+    let response_bytes = reqwest::get(format!("{}/{}/{}", ASSET_URL, &hash[0..2], hash))
         .await?
         .bytes()
-        .await
+        .await?;
+
+    hasher.update(&response_bytes);
+
+    if hasher.digest().to_string() != hash {
+        return Err(anyhow!("repsonse hash did not match asset hash"));
+    }
+
+    return Ok(response_bytes);
 }
 
