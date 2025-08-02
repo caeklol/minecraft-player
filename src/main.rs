@@ -6,7 +6,24 @@ use clap::Parser;
 use futures::stream::FuturesUnordered;
 use inquire::Select;
 use minecraft_player::assets::{self, Object, Version};
-use anyhow::Error;
+use anyhow::{anyhow, Error};
+
+#[derive(Parser, Debug)]
+enum FetchBehavior {
+    CacheOnly,
+    Refetch,
+    FetchIfMissing
+}
+
+#[derive(clap::Args, Debug)]
+#[group(required = false, multiple = false)]
+struct BehaviorGroup {
+    #[arg(short, long, help = "refetch all assets and replace all local files")]
+    refetch: bool,
+    
+    #[arg(short, long, help = "do not check against asset index and force use of local files")]
+    local: bool
+}
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -14,8 +31,8 @@ struct Args {
     #[arg(short, long, help = "version from which to fetch assets from")]
     target_version: Option<String>,
 
-    #[arg(short, long, help = "refetch all assets and replace all locally cached files")]
-    refetch: bool,
+    #[clap(flatten)]
+    behavior: BehaviorGroup,
 
     #[arg(short, long, help = "cache directory (default: ./data)", default_value = "./data")]
     cache: PathBuf,
@@ -70,26 +87,37 @@ async fn find_version(target_version: &Option<String>) -> Result<Version, Error>
 }
 
 async fn load_and_update_sounds(args: &Args) -> Result<HashMap<PathBuf, Bytes>, Error> {
+        let behavior = match (args.behavior.refetch, args.behavior.local) {
+            (true, false) => FetchBehavior::Refetch,
+            (false, true) => FetchBehavior::CacheOnly,
+            (false, false) => FetchBehavior::FetchIfMissing,
+            _ => unimplemented!("impossible")
+        };
+
     let version = find_version(&args.target_version).await?;
     
-    println!("fetching asset index...");
-    let asset_index = assets::fetch_asset_index(&version).await?;
-    println!("fetched asset index");
+    let asset_index = match behavior {
+        FetchBehavior::FetchIfMissing | FetchBehavior::Refetch => {
+            println!("fetching asset index...");
+            assets::fetch_asset_index(&version).await?.objects
+        },
+        FetchBehavior::CacheOnly => HashMap::new(),
+    };
 
     let mut sound_assets: HashMap<PathBuf, Bytes> = HashMap::new();
 
     let cache_path = args.cache.join(PathBuf::from(version.id.clone()));
     let local_paths = visit_dirs(&cache_path).unwrap_or(vec![]);
 
-    let remote_objects = match args.refetch {
-        true => {
-            asset_index.objects
+    let remote_objects = match behavior {
+        FetchBehavior::Refetch => {
+            asset_index
                 .iter()
                 .filter(|(key, _)| key.ends_with(".ogg"))
                 .map(|(key, val)| (PathBuf::from(key), val))
                 .collect::<HashMap<PathBuf, &Object>>()
         },
-        false => {
+        FetchBehavior::FetchIfMissing => {
             println!("reading local sound assets...");
             let futures = local_paths
                 .iter()
@@ -112,7 +140,7 @@ async fn load_and_update_sounds(args: &Args) -> Result<HashMap<PathBuf, Bytes>, 
             }
 
             let mut remote_total = 0;
-            let sound_objects = asset_index.objects
+            let sound_objects = asset_index
                 .iter()
                 .filter(|(key, _)| {
                     if key.ends_with(".ogg") {
@@ -128,6 +156,7 @@ async fn load_and_update_sounds(args: &Args) -> Result<HashMap<PathBuf, Bytes>, 
 
             sound_objects
         },
+        FetchBehavior::CacheOnly => HashMap::new(),
     };
     
     if !remote_objects.is_empty() {
@@ -135,10 +164,6 @@ async fn load_and_update_sounds(args: &Args) -> Result<HashMap<PathBuf, Bytes>, 
 
         let total_requests = Arc::new(AtomicUsize::new(0));
         let errored_requests = Arc::new(AtomicUsize::new(0));
-
-        // your computer DESERVES to panic if `u32` > `usize` and you are running this. that thing should have left a long time ago. picked
-        // up its little feet and ran
-        let request_len_digits: usize = remote_objects.len().checked_ilog10().unwrap().try_into().unwrap();
 
         let request_results: Vec<(PathBuf, Result<Bytes, Error>)> = stream::iter(remote_objects)
             .map(|(key, val)| {
@@ -157,7 +182,7 @@ async fn load_and_update_sounds(args: &Args) -> Result<HashMap<PathBuf, Bytes>, 
                 let errored = errored_requests.load(Ordering::Relaxed);
 
 
-                print!("total: {:>width$} | err: {:>width$}\r", total+1, errored, width = request_len_digits);
+                print!("total: {} | err: {}\r", total+1, errored);
 
                 res
             }
@@ -166,9 +191,7 @@ async fn load_and_update_sounds(args: &Args) -> Result<HashMap<PathBuf, Bytes>, 
             .collect()
             .await;
 
-        let total = total_requests.load(Ordering::Relaxed);
-        let errored = errored_requests.load(Ordering::Relaxed);
-        println!("total: {:>width$} | err: {:>width$}", total, errored, width = request_len_digits);
+        print!("\n");
 
         for (sound_path, bytes_res) in request_results {
             match bytes_res {
@@ -179,7 +202,7 @@ async fn load_and_update_sounds(args: &Args) -> Result<HashMap<PathBuf, Bytes>, 
                     tokio::fs::write(sound_path, bytes).await.expect("failed to write to file");
                 },
                 Err(e) => {
-                    eprintln!("failed to fetch `{:?}`, '{:#?}'", sound_path, e);
+                    eprintln!("failed to fetch `{:?}`, '{:?}'", sound_path, e);
                 },
             }
         }
@@ -196,7 +219,34 @@ async fn main() -> Result<(), Error> {
     println!("sound assets are up to date!");
 
     println!("reading target file");
-    let target = tokio::fs::read(args.input).await?;
+    let mut reader = hound::WavReader::open(&args.input)?;
+
+    if reader.spec().channels > 1 {
+        eprintln!("!! ERROR: stereo audio is not supported! please convert your input file into mono:");
+        let input_filename: &str = args.input.file_stem().unwrap().to_str().unwrap();
+        println!("help: if you have ffmpeg installed:");
+        println!("help: ffmpeg -i {}.wav -ac 1 {}.mono.wav", input_filename, input_filename);
+        return Err(anyhow!("input was stereo"));
+    }
+
+    let samples = reader.samples::<i16>().map(|r| r.expect("found empty sample")).collect::<Vec<i16>>();
+
+    let sample_rate = reader.spec().sample_rate;
+
+    // 20 minecraft ticks per second, (1s/20t) = 0.05s/t = 50ms/t
+    // chunk_size = sample_rate (samples/sec) * duration (ms) / 1000 (ms/sec)
+    //            = sample_rate * 50ms / 1000ms/sec
+    //            = (sample_rate * 50) / 1000 samples
+    let chunk_size = (sample_rate * 50) / 1000; 
+    println!("sample rate of {}Hz, splitting input into {} sized chunks", sample_rate, chunk_size);
+
+    // your computer DESERVES to panic if `u32` > `usize` and you are running this. that thing should have left a long time ago. picked
+    // up its little feet and ran
+    let chunks = samples.chunks_exact(chunk_size.try_into().unwrap()).collect::<Vec<&[i16]>>();
+    
+    for chunk in chunks {
+
+    }
 
     return Ok(());
 }
