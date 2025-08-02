@@ -1,18 +1,20 @@
-use std::{collections::HashMap, fmt::{Display, Pointer}};
+use std::{collections::HashMap, fmt::Display};
+use bytes::Bytes;
 
 use reqwest::Error;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 static VERSION_MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+static ASSET_URL: &str = "https://resources.download.minecraft.net";
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct LatestVersion {
     pub release: String,
     pub snapshot: String
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct Version {
     pub id: String,
     pub url: String
@@ -24,7 +26,7 @@ impl Display for Version {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct VersionManifest {
     pub latest: LatestVersion,
     pub versions: Vec<Version>
@@ -61,13 +63,13 @@ impl<'de> Deserialize<'de> for VersionPackage {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct Object {
     pub hash: String,
     pub size: usize
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct AssetIndex {
     pub objects: HashMap<String, Object>
 }
@@ -84,3 +86,11 @@ pub async fn fetch_asset_index(version: &Version) -> Result<AssetIndex, Error> {
         .await?
     )
 }
+
+pub async fn fetch_asset(hash: &str) -> Result<Bytes, Error> {
+    reqwest::get(format!("{}/{}/{}", ASSET_URL, &hash[0..2], hash))
+        .await?
+        .bytes()
+        .await
+}
+
