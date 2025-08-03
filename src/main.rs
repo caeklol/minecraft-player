@@ -1,10 +1,9 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, time::{Instant, SystemTime}};
 
 use anyhow::{Error, anyhow};
 use clap::Parser;
-use hound::SampleFormat;
 use inquire::Select;
-use minecraft_player::{assets::{self, AudioResourceLocation, FetchBehavior}, audio::{self, Frequency, Processor, Sound}, mojang::{self, AssetIndex, Version}};
+use minecraft_player::{assets::{self, AudioResourceLocation, FetchBehavior}, audio::{self, FftResult, Frequency, Processor, Sound}, mojang::{self, AssetIndex, Version}};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 #[derive(clap::Args, Debug)]
@@ -142,10 +141,21 @@ async fn main() -> Result<(), Error> {
     };
 
     let fft = Processor::new();
+    let fft_resolution = 2048;
     let sounds = fetch_predictable_sounds(&args.target_version, &args.assets, &behavior).await?
         .into_par_iter()
-        .map(|(id, sound)| (id, fft.fft(sound)))
-        .collect::<HashMap<String, Vec<Frequency>>>();
+        .map(|(id, sound)| (id, fft.fft(sound, fft_resolution)))
+        .collect::<HashMap<String, FftResult>>();
+
+    let sound_names = sounds.iter().map(|s| s.0.clone()).collect::<Vec<String>>();
+    let sound_bins = sounds.iter().map(|s| s.1.as_volume().iter().map(|n| *n as f64).collect::<Vec<f64>>()).collect::<Vec<Vec<f64>>>();
+    let flat_vec: Vec<f64> = sound_bins.clone().into_iter().flatten().collect();
+
+    let rows = sound_bins.len();
+    let cols = if rows > 0 { sound_bins[0].len() } else { 0 };
+    let shape = (rows, cols);
+
+    let sound_bins = ndarray::ArrayView2::from_shape(shape, &flat_vec)?.reversed_axes();
 
     println!("found {} predictable sounds", sounds.len());
 
@@ -173,15 +183,26 @@ async fn main() -> Result<(), Error> {
     let samples_per_tick = audio::time_as_samples!(50, sample_rate); 
     println!("sample rate of {}Hz, splitting input into {} sized chunks", sample_rate, samples_per_tick);
 
-    // your computer DESERVES to panic if `u32` > `usize` and you are running this. that thing should have left a long time ago. picked
-    // up its little feet and ran
     let chunks = samples.chunks_exact(samples_per_tick.try_into().unwrap()).collect::<Vec<&[f32]>>()
         .into_par_iter()
         .map(|samples_for_tick| fft.fft(Sound {
             samples: samples_for_tick.to_vec(),
             sample_rate
-        }))
-        .collect::<Vec<Vec<Frequency>>>();
+        }, fft_resolution).as_volume().iter().map(|n| *n as f64).collect::<Vec<f64>>())
+        .collect::<Vec<Vec<f64>>>();
+    
+    println!("{}", chunks.len());
+
+    let amplitudes = chunks
+        .into_par_iter()
+        .map(|target| {
+            let start = Instant::now();
+            let target_array = ndarray::ArrayView::from(&target);
+            let (amplitudes, residual) = nnls::nnls(sound_bins, target_array);
+            println!("residual {}, {}ms elapsed", residual, start.elapsed().as_millis());
+            amplitudes.to_vec()
+        })
+        .collect::<Vec<Vec<f64>>>();
 
     return Ok(());
 }

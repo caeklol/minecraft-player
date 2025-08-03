@@ -15,11 +15,6 @@ pub struct Sound {
     pub sample_rate: usize
 }
 
-pub struct Frequency {
-    pub freq: f32,
-    pub volume: f32,
-    pub position: f32
-}
 
 fn lerp(start: f32, end: f32, t: f32) -> f32 {
     start * (1.0 - t) + end * t
@@ -60,8 +55,38 @@ pub fn adjust_pitch(sound: &Sound, pitch: f32) -> Sound {
     };
 }
 
-// heavily inspired and simplified version of `audioviz` processor, specifically optimized for
-// audio samples of single ticks of minecraft sounds
+pub struct FftResult {
+    distribution: Vec<Frequency>
+}
+
+impl FftResult {
+    pub fn as_volume(&self) -> Vec<f32> {
+        self.distribution
+            .iter()
+            .map(|f| f.volume)
+            .collect::<Vec<f32>>()
+    }
+}
+
+// everything here is heavily inspired from `audioviz`, but this is specifically 
+// optimized for audio samples of 1 tick minecraft sounds
+#[derive(Clone)]
+pub struct Frequency {
+    pub freq: f32,
+    pub volume: f32,
+    pub position: f32
+}
+
+impl Frequency {
+    pub fn empty() -> Self {
+        Frequency {
+            volume: 0.0,
+            freq: 0.0,
+            position: 0.0,
+        }
+    }
+}
+
 pub struct Processor {
     fft_cache: HashMap<usize, Arc<dyn Fft<f32>>>
 }
@@ -78,12 +103,13 @@ impl Processor {
         } 
     }
 
-    pub fn fft(&self, sound: Sound) -> Vec<Frequency> {
+    pub fn fft(&self, sound: Sound, resolution: usize) -> FftResult {
         let length = sound.samples.len();
         let mut buffer = Vec::new();
 
         let mut samples = sound.samples;
 
+        // audioviz::spectrum::processor::Processor.apodize()
         let window = apodize::hamming_iter(length).collect::<Vec<f64>>();
         for i in 0..length {
             samples[i] *= window[i] as f32;
@@ -101,32 +127,43 @@ impl Processor {
             },
         };
 
+        // audioviz::spectrum::processor::Processor.fft()
         fft.process(&mut buffer);
 
-        let normalized: Vec<f32> = buffer.iter().map(|x| x.norm_sqr()).collect();
+        let normalized: Vec<f32> = buffer.iter().map(|x| x.norm()).collect();
         let len = normalized.len() / 2 + 1;
         let mut raw = normalized[..len].to_vec();
 
-        // log volume normalization
+        // audioviz::spectrum::processor::Processor.normalize(Log)
         for i in 0..raw.len() {
             let percentage = (i + 1) as f32 / raw.len() as f32;
             raw[i] *= 1.0 / 2_f32.log(percentage + 1.0);
             raw[i] *= 0.2;
         }
 
-        let mut output = Vec::new();
+        let mut bins = Vec::new();
 
+        // audioviz::spectrum::processor::Processor.raw_to_freq_buffer()
         for (i, val) in raw.iter().enumerate() {
             let percentage: f32 = (i + 1) as f32 / raw.len() as f32;
-            output.push(Frequency {
+            bins.push(Frequency {
                 volume: *val,
                 position: percentage,
                 freq: percentage * (sound.sample_rate as f32 / 2.0),
             });
         }
 
-        // todo: interpolate
+        // audioviz::spectrum::processor::Processor.interpolate(Gaps)
+        let mut o_buf: Vec<Frequency> = vec![Frequency::empty(); resolution];
+        for bin in bins {
+            let abs_pos = (o_buf.len() as f32 * bin.position) as usize;
+            if abs_pos < o_buf.len() {
+                if bin.volume > o_buf[abs_pos].volume {
+                    o_buf[abs_pos] = bin.clone();
+                }
+            }
+        }
 
-        Vec::new()
+        FftResult { distribution: o_buf }
     }
 }
