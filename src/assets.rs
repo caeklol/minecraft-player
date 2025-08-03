@@ -65,7 +65,7 @@ fn visit_dirs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-pub async fn fetch_sound_definitions(assets: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<Vec<(String, SoundDefinition)>, Error> {
+pub async fn fetch_sound_definitions(assets: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<HashMap<String, SoundDefinition>, Error> {
     let assets_path = assets.join(PathBuf::from(version.id.clone()));
     let sound_definitions_path = &assets_path.join("sound_definitons.json");
 
@@ -96,7 +96,7 @@ pub async fn fetch_sound_definitions(assets: &PathBuf, version: &Version, behavi
     return Ok(defs);
 }
 
-pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<Vec<(PathBuf, SoundAsset)>, Error> {
+pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<HashMap<PathBuf, SoundAsset>, Error> {
     let mut sound_assets_bytes: HashMap<PathBuf, Bytes> = HashMap::new();
 
     let cache_path = assets.join(PathBuf::from(version.id.clone()));
@@ -112,7 +112,7 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
                 .iter()
                 .filter(|(key, _)| key.ends_with(".ogg"))
                 .map(|(key, val)| (PathBuf::from(key), val))
-                .collect::<Vec<(PathBuf, &Object)>>()
+                .collect::<HashMap<PathBuf, &Object>>()
         },
         FetchBehavior::FetchIfMissing => {
             println!("reading local sound assets...");
@@ -121,7 +121,7 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
                     (path, fs::read(path).await)
                 })
                 .buffer_unordered(512)
-                .collect::<Vec<(&PathBuf, Result<Vec<u8>, std::io::Error>)>>()
+                .collect::<HashMap<&PathBuf, Result<Vec<u8>, std::io::Error>>>()
                 .await;
 
             for (sound_path, bytes_res) in byte_results {
@@ -147,13 +147,13 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
                 })
                 .map(|(key, val)| (PathBuf::from(key), val))
                 .filter(|(key, _)| !local_paths.contains(&cache_path.join(key)))
-                .collect::<Vec<(PathBuf, &Object)>>();
+                .collect::<HashMap<PathBuf, &Object>>();
 
             println!("found remote {} assets and {} local assets. fetching {} assets", remote_total, local_paths.len(), sound_objects.len());
 
             sound_objects
         },
-        FetchBehavior::CacheOnly => vec![],
+        FetchBehavior::CacheOnly => HashMap::new(),
     };
     
     if !remote_objects.is_empty() {
@@ -162,7 +162,7 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
         let total_requests = Arc::new(AtomicUsize::new(0));
         let errored_requests = Arc::new(AtomicUsize::new(0));
 
-        let request_results: Vec<(PathBuf, Result<Bytes, Error>)> = stream::iter(remote_objects)
+        let request_results: HashMap<PathBuf, Result<Bytes, Error>> = stream::iter(remote_objects)
             .map(|(key, val)| {
                 let total_requests = total_requests.clone();
                 let errored_requests = errored_requests.clone();
@@ -253,6 +253,6 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
         .iter()
         .filter(|t| t.is_some())
         .map(|t| t.clone().unwrap())
-        .collect::<Vec<(PathBuf, SoundAsset)>>()
+        .collect::<HashMap<PathBuf, SoundAsset>>()
     );
 }

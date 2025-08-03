@@ -107,7 +107,7 @@ async fn fetch_predictable_sounds(
                 };
 
                 if let Some((sound_name, pitch)) = resource {
-                    let sound = sounds.iter().find(|(path, _)| path == &sound_path.join(&sound_name));
+                    let sound = sounds.iter().find(|(path, _)| *path == &sound_path.join(&sound_name));
                     if let Some(sound) = sound {
                         let sound = &sound.1;
                         let pitch_normalized = audio::adjust_pitch(&sound.samples, pitch);
