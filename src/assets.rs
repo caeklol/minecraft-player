@@ -10,19 +10,13 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::{audio, mojang::{self, AssetIndex, Object, Version}};
+use crate::{audio::{self, Sound}, mojang::{self, AssetIndex, Object, Version}};
 
 #[derive(Parser, Debug)]
 pub enum FetchBehavior {
     CacheOnly,
     Refetch,
     FetchIfMissing
-}
-
-#[derive(Clone)]
-pub struct SoundAsset {
-    pub samples: Vec<i16>,
-    pub sample_rate: usize
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -96,7 +90,8 @@ pub async fn fetch_sound_definitions(assets: &PathBuf, version: &Version, behavi
     return Ok(defs);
 }
 
-pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<HashMap<PathBuf, SoundAsset>, Error> {
+/// converts all stereo sounds to mono
+pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<HashMap<PathBuf, Sound>, Error> {
     let mut sound_assets_bytes: HashMap<PathBuf, Bytes> = HashMap::new();
 
     let cache_path = assets.join(PathBuf::from(version.id.clone()));
@@ -206,7 +201,7 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
 
     return Ok(sound_assets_bytes
         .into_par_iter()
-        .map(|(path, bytes)| -> Result<Option<(PathBuf, SoundAsset)>, Error> {
+        .map(|(path, bytes)| -> Result<Option<(PathBuf, Sound)>, Error> {
             let cursor = Cursor::new(bytes);
 
             let mut ogg_reader = OggStreamReader::new(cursor)
@@ -219,7 +214,7 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
 
             let stereo = ogg_reader.ident_hdr.audio_channels == 2;
             
-            while let Some(channels) = ogg_reader.read_dec_packet()
+            while let Some(channels) = ogg_reader.read_dec_packet_generic::<Vec<Vec<f32>>>()
                 .map_err(|e| anyhow!("failed to read packet for {}, {}", path.to_string_lossy(), e))? {
                     
                 if samples.len() >= (samples_per_tick * 2) { // *2 because max pitch is 2, so
@@ -232,10 +227,10 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
                     let left_channel = &channels[0];
                     let right_channel = &channels[1];
 
-                    let mut averaged: Vec<i16> = Vec::new();
+                    let mut averaged = Vec::new();
                     for index in 0..left_channel.len() {
-                        let avg = (left_channel[index] as i32 + right_channel[index] as i32) / 2i32;
-                        averaged.push(avg.try_into().unwrap());
+                        let avg = (left_channel[index] + right_channel[index] ) / 2.0;
+                        averaged.push(avg);
                     }
 
                     samples.extend(averaged);
@@ -244,15 +239,15 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
                 }
             }
 
-            return Ok(Some((path.to_path_buf(), SoundAsset {
+            return Ok(Some((path.to_path_buf(), Sound {
                 samples: samples.to_vec(),
                 sample_rate
             })));
         })
-        .collect::<Result<Vec<Option<(PathBuf, SoundAsset)>>, Error>>()?
+        .collect::<Result<Vec<Option<(PathBuf, Sound)>>, Error>>()?
         .iter()
         .filter(|t| t.is_some())
         .map(|t| t.clone().unwrap())
-        .collect::<HashMap<PathBuf, SoundAsset>>()
+        .collect::<HashMap<PathBuf, Sound>>()
     );
 }

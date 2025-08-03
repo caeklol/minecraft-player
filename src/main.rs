@@ -3,7 +3,8 @@ use std::{collections::HashMap, path::PathBuf};
 use anyhow::{Error, anyhow};
 use clap::Parser;
 use inquire::Select;
-use minecraft_player::{assets::{self, AudioResourceLocation, FetchBehavior, SoundAsset}, audio::{self, adjust_pitch}, mojang::{self, AssetIndex, Version}};
+use minecraft_player::{assets::{self, AudioResourceLocation, FetchBehavior}, audio::{self, Frequency, Processor, Sound}, mojang::{self, AssetIndex, Version}};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 #[derive(clap::Args, Debug)]
 #[group(required = false, multiple = false)]
@@ -65,7 +66,7 @@ async fn fetch_predictable_sounds(
     version: &Option<String>,
     assets: &PathBuf,
     behavior: &FetchBehavior
-) -> Result<HashMap<String, Vec<i16>>, Error> {
+) -> Result<HashMap<String, Sound>, Error> {
     let version = find_version(version).await?;
     
     let asset_index = match behavior {
@@ -107,13 +108,17 @@ async fn fetch_predictable_sounds(
                 };
 
                 if let Some((sound_name, pitch)) = resource {
-                    let sound = sounds.iter().find(|(path, _)| *path == &sound_path.join(&sound_name));
+                    let sound_path = sound_path.join(&sound_name).with_extension("ogg");
+                    let sound = sounds.iter().find(|(path, _)| *path == &sound_path);
                     if let Some(sound) = sound {
                         let sound = &sound.1;
-                        let pitch_normalized = audio::adjust_pitch(&sound.samples, pitch);
+                        let pitch_normalized = audio::adjust_pitch(&sound, pitch).samples;
                         let samples_per_tick = (sound.sample_rate * 50) / 1000;
                         if pitch_normalized.len() >= samples_per_tick {
-                            result.insert(identifier, pitch_normalized[0..samples_per_tick].to_vec());
+                            result.insert(identifier, Sound {
+                                samples: pitch_normalized[0..samples_per_tick].to_vec(),
+                                sample_rate: sound.sample_rate
+                            });
                         }
                     }
                 }
@@ -135,7 +140,12 @@ async fn main() -> Result<(), Error> {
         _ => unimplemented!("impossible")
     };
 
-    let sounds = fetch_predictable_sounds(&args.target_version, &args.assets, &behavior).await?;
+    let fft = Processor::new();
+    let sounds = fetch_predictable_sounds(&args.target_version, &args.assets, &behavior).await?
+        .into_par_iter()
+        .map(|(id, sound)| (id, fft.fft(sound)))
+        .collect::<HashMap<String, Vec<Frequency>>>();
+    println!("{}", sounds.len());
 
     println!("reading target file");
     let mut reader = hound::WavReader::open(&args.input)?;
