@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 use anyhow::{Error, anyhow};
 use clap::Parser;
 use inquire::Select;
-use minecraft_player::{assets::{self, AudioResourceLocation, FetchBehavior}, mojang::{self, AssetIndex, Version}};
+use minecraft_player::{assets::{self, AudioResourceLocation, FetchBehavior, SoundAsset}, audio::{self, adjust_pitch}, mojang::{self, AssetIndex, Version}};
 
 #[derive(clap::Args, Debug)]
 #[group(required = false, multiple = false)]
@@ -61,11 +61,11 @@ async fn find_version(target_version: &Option<String>) -> Result<Version, Error>
     return Ok(Select::new("what version will you use?", manifest.versions).prompt().unwrap())
 }
 
-async fn fetch_sound_registry(
+async fn fetch_predictable_sounds(
     version: &Option<String>,
     assets: &PathBuf,
     behavior: &FetchBehavior
-) -> Result<HashMap<String, String>, Error> {
+) -> Result<HashMap<String, Vec<i16>>, Error> {
     let version = find_version(version).await?;
     
     let asset_index = match behavior {
@@ -90,29 +90,38 @@ async fn fetch_sound_registry(
 
     for (identifier, def) in definitions {
         if def.sounds.len() == 1 {
-            let sound_name = match &def.sounds[0] {
-                AudioResourceLocation::Partial(s) => Some(PathBuf::from(s)),
-                AudioResourceLocation::Full(resource_location) => {
-                    if let Some(resource_type) = &resource_location.resource_type {
-                        if resource_type == "sound" {
-                            Some(resource_location.name.clone())
+            if let Some(sound) = def.sounds.get(0) {
+                let resource = match sound {
+                    AudioResourceLocation::Partial(s) => Some((PathBuf::from(s), 1.0)),
+                    AudioResourceLocation::Full(resource_location) => {
+                        if let Some(resource_type) = &resource_location.resource_type {
+                            if resource_type == "sound" {
+                                Some((resource_location.name.clone(), resource_location.pitch.unwrap_or(1.0)))
+                            } else {
+                                None
+                            }
                         } else {
-                            None
+                            Some((resource_location.name.clone(), resource_location.pitch.unwrap_or(1.0)))
                         }
-                    } else {
-                        Some(resource_location.name.clone())
-                    }
-                },
-            };
+                    },
+                };
 
-            if let Some(sound_name) = sound_name {
-                let sound = sounds.iter().find(|(path, _)| *path == &sound_path.join(&sound_name));
-                result.insert(identifier, sound);
+                if let Some((sound_name, pitch)) = resource {
+                    let sound = sounds.iter().find(|(path, _)| path == &sound_path.join(&sound_name));
+                    if let Some(sound) = sound {
+                        let sound = &sound.1;
+                        let pitch_normalized = audio::adjust_pitch(&sound.samples, pitch);
+                        let samples_per_tick = (sound.sample_rate * 50) / 1000;
+                        if pitch_normalized.len() >= samples_per_tick {
+                            result.insert(identifier, pitch_normalized[0..samples_per_tick].to_vec());
+                        }
+                    }
+                }
             }
         }
     }
 
-    Err(anyhow!(result.len()))
+    Ok(result) 
 }
 
 #[tokio::main]
@@ -126,7 +135,7 @@ async fn main() -> Result<(), Error> {
         _ => unimplemented!("impossible")
     };
 
-    let sounds = fetch_sound_registry(&args.target_version, &args.assets, &behavior).await?;
+    let sounds = fetch_predictable_sounds(&args.target_version, &args.assets, &behavior).await?;
 
     println!("reading target file");
     let mut reader = hound::WavReader::open(&args.input)?;
@@ -144,19 +153,12 @@ async fn main() -> Result<(), Error> {
     let sample_rate = reader.spec().sample_rate;
 
     // 20 minecraft ticks per second, (1s/20t) = 0.05s/t = 50ms/t
-    // samples_per_tick = sample_rate (samples/sec) * duration (ms) / 1000 (ms/sec)
-    //                  = sample_rate * 50ms / 1000ms/sec
-    //                  = (sample_rate * 50) / 1000 samples
-    let samples_per_tick = (sample_rate * 50) / 1000; 
+    let samples_per_tick = audio::time_as_samples!(50, sample_rate); 
     println!("sample rate of {}Hz, splitting input into {} sized chunks", sample_rate, samples_per_tick);
 
     // your computer DESERVES to panic if `u32` > `usize` and you are running this. that thing should have left a long time ago. picked
     // up its little feet and ran
     let chunks = samples.chunks_exact(samples_per_tick.try_into().unwrap()).collect::<Vec<&[i16]>>();
-    
-    for chunk in chunks {
-
-    }
 
     return Ok(());
 }

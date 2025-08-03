@@ -1,16 +1,16 @@
-use std::{collections::HashMap, fs::exists, io::Cursor, path::{Path, PathBuf}, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
+use std::{collections::HashMap, io::Cursor, path::{Path, PathBuf}, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
 
 use anyhow::{anyhow, Error};
 use bytes::Bytes;
 use clap::Parser;
-use futures::stream::{self, FuturesUnordered};
+use futures::stream::{self};
 use lewton::inside_ogg::OggStreamReader;
 use futures::StreamExt;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::mojang::{self, AssetIndex, Object, Version};
+use crate::{audio, mojang::{self, AssetIndex, Object, Version}};
 
 #[derive(Parser, Debug)]
 pub enum FetchBehavior {
@@ -20,9 +20,9 @@ pub enum FetchBehavior {
 }
 
 #[derive(Clone)]
-pub struct Sound {
-    first_tick: Vec<i16>,
-    sample_rate: usize
+pub struct SoundAsset {
+    pub samples: Vec<i16>,
+    pub sample_rate: usize
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -47,7 +47,25 @@ pub struct SoundDefinition {
     pub subtitle: Option<String>
 }
 
-pub async fn fetch_sound_definitions(assets: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<HashMap<String, SoundDefinition>, Error> {
+fn visit_dirs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+
+    if dir.is_dir() {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(visit_dirs(&path)?);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    
+    Ok(files)
+}
+
+pub async fn fetch_sound_definitions(assets: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<Vec<(String, SoundDefinition)>, Error> {
     let assets_path = assets.join(PathBuf::from(version.id.clone()));
     let sound_definitions_path = &assets_path.join("sound_definitons.json");
 
@@ -78,10 +96,10 @@ pub async fn fetch_sound_definitions(assets: &PathBuf, version: &Version, behavi
     return Ok(defs);
 }
 
-pub async fn fetch_sounds(cache: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<HashMap<PathBuf, Sound>, Error> {
+pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<Vec<(PathBuf, SoundAsset)>, Error> {
     let mut sound_assets_bytes: HashMap<PathBuf, Bytes> = HashMap::new();
 
-    let cache_path = cache.join(PathBuf::from(version.id.clone()));
+    let cache_path = assets.join(PathBuf::from(version.id.clone()));
     let local_paths: Vec<PathBuf> = visit_dirs(&cache_path)
         .unwrap_or(vec![])
         .into_iter()
@@ -94,7 +112,7 @@ pub async fn fetch_sounds(cache: &PathBuf, version: &Version, behavior: &FetchBe
                 .iter()
                 .filter(|(key, _)| key.ends_with(".ogg"))
                 .map(|(key, val)| (PathBuf::from(key), val))
-                .collect::<HashMap<PathBuf, &Object>>()
+                .collect::<Vec<(PathBuf, &Object)>>()
         },
         FetchBehavior::FetchIfMissing => {
             println!("reading local sound assets...");
@@ -129,13 +147,13 @@ pub async fn fetch_sounds(cache: &PathBuf, version: &Version, behavior: &FetchBe
                 })
                 .map(|(key, val)| (PathBuf::from(key), val))
                 .filter(|(key, _)| !local_paths.contains(&cache_path.join(key)))
-                .collect::<HashMap<PathBuf, &Object>>();
+                .collect::<Vec<(PathBuf, &Object)>>();
 
             println!("found remote {} assets and {} local assets. fetching {} assets", remote_total, local_paths.len(), sound_objects.len());
 
             sound_objects
         },
-        FetchBehavior::CacheOnly => HashMap::new(),
+        FetchBehavior::CacheOnly => vec![],
     };
     
     if !remote_objects.is_empty() {
@@ -188,22 +206,25 @@ pub async fn fetch_sounds(cache: &PathBuf, version: &Version, behavior: &FetchBe
 
     return Ok(sound_assets_bytes
         .into_par_iter()
-        .map(|(path, bytes)| -> Result<Option<(PathBuf, Sound)>, Error> {
+        .map(|(path, bytes)| -> Result<Option<(PathBuf, SoundAsset)>, Error> {
             let cursor = Cursor::new(bytes);
 
             let mut ogg_reader = OggStreamReader::new(cursor)
                 .map_err(|e| anyhow!("failed to decode {}, {}", path.to_string_lossy(), e))?;
 
             let sample_rate: usize = ogg_reader.ident_hdr.audio_sample_rate.try_into().unwrap();
-            let samples_per_tick = (sample_rate * 50) / 1000; 
 
+            let samples_per_tick = (sample_rate * 50) / 1000;
             let mut samples = Vec::new();
 
             let stereo = ogg_reader.ident_hdr.audio_channels == 2;
             
             while let Some(channels) = ogg_reader.read_dec_packet()
                 .map_err(|e| anyhow!("failed to read packet for {}, {}", path.to_string_lossy(), e))? {
-                if samples.len() >= samples_per_tick {
+                    
+                if samples.len() >= (samples_per_tick * 2) { // *2 because max pitch is 2, so
+                                                             // will only ever need first 2 ticks
+                                                             // of the sample
                     break
                 }
 
@@ -223,38 +244,15 @@ pub async fn fetch_sounds(cache: &PathBuf, version: &Version, behavior: &FetchBe
                 }
             }
 
-            if samples.len() < samples_per_tick {
-                return Ok(None);
-            }
-
-            let samples = &samples[0..samples_per_tick];
-
-            return Ok(Some((path.to_path_buf(), Sound {
-                first_tick: samples.to_vec(),
+            return Ok(Some((path.to_path_buf(), SoundAsset {
+                samples: samples.to_vec(),
                 sample_rate
             })));
         })
-        .collect::<Result<Vec<Option<(PathBuf, Sound)>>, Error>>()?
+        .collect::<Result<Vec<Option<(PathBuf, SoundAsset)>>, Error>>()?
         .iter()
         .filter(|t| t.is_some())
         .map(|t| t.clone().unwrap())
-        .collect::<HashMap<PathBuf, Sound>>()
+        .collect::<Vec<(PathBuf, SoundAsset)>>()
     );
-}
-fn visit_dirs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-
-    if dir.is_dir() {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(visit_dirs(&path)?);
-            } else {
-                files.push(path);
-            }
-        }
-    }
-    
-    Ok(files)
 }
