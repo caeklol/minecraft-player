@@ -2,6 +2,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::{Error, anyhow};
 use clap::Parser;
+use hound::SampleFormat;
 use inquire::Select;
 use minecraft_player::{assets::{self, AudioResourceLocation, FetchBehavior}, audio::{self, Frequency, Processor, Sound}, mojang::{self, AssetIndex, Version}};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -145,7 +146,8 @@ async fn main() -> Result<(), Error> {
         .into_par_iter()
         .map(|(id, sound)| (id, fft.fft(sound)))
         .collect::<HashMap<String, Vec<Frequency>>>();
-    println!("{}", sounds.len());
+
+    println!("found {} predictable sounds", sounds.len());
 
     println!("reading target file");
     let mut reader = hound::WavReader::open(&args.input)?;
@@ -158,9 +160,14 @@ async fn main() -> Result<(), Error> {
         return Err(anyhow!("input was stereo"));
     }
 
-    let samples = reader.samples::<i16>().map(|r| r.expect("found empty sample")).collect::<Vec<i16>>();
+    let samples = reader.samples::<i16>()
+        .map(|r| r.expect("found empty sample"))
+        .collect::<Vec<i16>>()
+        .iter()
+        .map(|i| *i as f32)
+        .collect::<Vec<f32>>();
 
-    let sample_rate = reader.spec().sample_rate;
+    let sample_rate: usize = reader.spec().sample_rate.try_into().unwrap();
 
     // 20 minecraft ticks per second, (1s/20t) = 0.05s/t = 50ms/t
     let samples_per_tick = audio::time_as_samples!(50, sample_rate); 
@@ -168,7 +175,13 @@ async fn main() -> Result<(), Error> {
 
     // your computer DESERVES to panic if `u32` > `usize` and you are running this. that thing should have left a long time ago. picked
     // up its little feet and ran
-    let chunks = samples.chunks_exact(samples_per_tick.try_into().unwrap()).collect::<Vec<&[i16]>>();
+    let chunks = samples.chunks_exact(samples_per_tick.try_into().unwrap()).collect::<Vec<&[f32]>>()
+        .into_par_iter()
+        .map(|samples_for_tick| fft.fft(Sound {
+            samples: samples_for_tick.to_vec(),
+            sample_rate
+        }))
+        .collect::<Vec<Vec<Frequency>>>();
 
     return Ok(());
 }

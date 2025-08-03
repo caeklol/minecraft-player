@@ -70,8 +70,8 @@ impl Processor {
     pub fn new() -> Self {
         let mut fft_planner = FftPlanner::new();
         let mut fft_cache = HashMap::new();
-        fft_cache.insert(2205, fft_planner.plan_fft_forward(2205)); // # samples for 1 tick at 44.1kHz
-        fft_cache.insert(2400, fft_planner.plan_fft_forward(2400)); // # samples for 1 tick at 48kHz
+        fft_cache.insert(time_as_samples!(44100, 50), fft_planner.plan_fft_forward(time_as_samples!(44100, 50))); // # samples for 1 tick at 44.1kHz
+        fft_cache.insert(time_as_samples!(48000, 50), fft_planner.plan_fft_forward(time_as_samples!(48000, 50))); // # samples for 1 tick at 48kHz
 
         Self {
             fft_cache
@@ -82,13 +82,21 @@ impl Processor {
         let length = sound.samples.len();
         let mut buffer = Vec::new();
 
-        for sample in sound.samples {
+        let mut samples = sound.samples;
+
+        let window = apodize::hamming_iter(length).collect::<Vec<f64>>();
+        for i in 0..length {
+            samples[i] *= window[i] as f32;
+        }
+
+        for sample in samples {
             buffer.push(Complex { re: sample, im: 0.0 });
         }
 
         let fft = match self.fft_cache.get(&length) {
             Some(fft) => fft,
             None => {
+                println!("cache miss, {} sample size, {} sample rate", length, sound.sample_rate);
                 &FftPlanner::new().plan_fft_forward(length)
             },
         };
@@ -116,6 +124,8 @@ impl Processor {
                 freq: percentage * (sound.sample_rate as f32 / 2.0),
             });
         }
+
+        // todo: interpolate
 
         Vec::new()
     }
