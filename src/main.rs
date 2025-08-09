@@ -147,7 +147,7 @@ async fn main() -> Result<(), Error> {
 
     let sounds = audio::permute_with_pitch(predictable_sounds, 8)
         .into_par_iter()
-        .map(|(id, mut sound)| (id, sound.resample(48000).mel(&processor).samples.clone()))
+        .filter_map(|(id, mut sound)| Some((id, sound.resample(48000).mel(&processor).first_tick()?.samples.clone())))
         .collect::<Vec<((String, f32), Vec<f32>)>>();
 
     let sound_ids = sounds.iter().map(|s| s.0.clone()).collect::<Vec<(String, f32)>>();

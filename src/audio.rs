@@ -13,12 +13,6 @@ pub use time_as_samples;
 
 use crate::algebra;
 
-#[derive(Clone)]
-pub struct Sound {
-    pub samples: Vec<f32>,
-    pub sample_rate: usize
-}
-
 fn lerp(start: f32, end: f32, t: f32) -> f32 {
     start * (1.0 - t) + end * t
 }
@@ -38,9 +32,15 @@ pub fn permute_with_pitch(samples: Vec<(String, Sound)>, resolution: usize) -> V
         .collect::<Vec<((String, f32), Sound)>>();
 }
 
+#[derive(Clone)]
+pub struct Sound {
+    pub samples: Vec<f32>,
+    pub sample_rate: usize
+}
+
 impl Sound {
     pub fn first_tick(&self) -> Option<Sound> {
-        let samples_per_tick = (self.sample_rate * 50) / 1000;
+        let samples_per_tick = f32::ceil((self.sample_rate as f32 * 50.0) / 1000.0) as usize;
         if self.samples.len() < samples_per_tick {
             None
         } else {
@@ -56,6 +56,9 @@ impl Sound {
     pub fn resample(&mut self, new_rate: usize) -> &mut Self {
         let input_len = self.samples.len();
         let output_len = (input_len * new_rate) / self.sample_rate;
+        if output_len == 2398 {
+            panic!("{}, {}", input_len, self.sample_rate);
+        }
 
         if input_len == 0 || output_len == 0 {
             panic!("resample failed, input or output len was 0");
