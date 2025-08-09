@@ -28,7 +28,7 @@ pub fn permute_with_pitch(samples: Vec<(String, Sound)>, resolution: usize) -> V
 
     return zipped
         .into_par_iter()
-        .filter_map(|((id, pitch), mut sound)| Some(((id, pitch), sound.adjust_pitch(pitch).first_tick_raw()?)))
+        .map(|((id, pitch), mut sound)| ((id, pitch), sound.adjust_pitch(pitch).first_tick().clone()))
         .collect::<Vec<((String, f32), Sound)>>();
 }
 
@@ -41,26 +41,15 @@ pub struct Sound {
 impl Sound {
     /// pads silence with zeroes
     pub fn first_tick(&mut self) -> &mut Self {
-        if let Some(ft) = self.first_tick_raw() {
-            self.samples = ft.samples;
-            return self;
-        } else {
-            let samples_per_tick = f32::ceil((self.sample_rate as f32 * 50.0) / 1000.0) as usize;
-            self.samples.resize(samples_per_tick, 0.0);
-            return self;
-        }
-    }
-
-    pub fn first_tick_raw(&self) -> Option<Sound> {
         let samples_per_tick = f32::ceil((self.sample_rate as f32 * 50.0) / 1000.0) as usize;
+
         if self.samples.len() < samples_per_tick {
-            None
+            self.samples.resize(samples_per_tick, 0.0);
         } else {
-            return Some(Sound {
-                samples: (self.samples[0..samples_per_tick]).to_vec(),
-                sample_rate: self.sample_rate
-            });
+            self.samples = (self.samples[0..samples_per_tick]).to_vec();
         }
+
+        return self;
     }
 
     /// handles up and downsampling
@@ -68,9 +57,6 @@ impl Sound {
     pub fn resample(&mut self, new_rate: usize) -> &mut Self {
         let input_len = self.samples.len();
         let output_len = (input_len * new_rate) / self.sample_rate;
-        if output_len == 2398 {
-            panic!("{}, {}", input_len, self.sample_rate);
-        }
 
         if input_len == 0 || output_len == 0 {
             panic!("resample failed, input or output len was 0");
