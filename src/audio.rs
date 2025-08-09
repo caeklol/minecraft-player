@@ -28,7 +28,7 @@ pub fn permute_with_pitch(samples: Vec<(String, Sound)>, resolution: usize) -> V
 
     return zipped
         .into_par_iter()
-        .filter_map(|((id, pitch), mut sound)| Some(((id, pitch), sound.adjust_pitch(pitch).first_tick()?)))
+        .filter_map(|((id, pitch), mut sound)| Some(((id, pitch), sound.adjust_pitch(pitch).first_tick_raw()?)))
         .collect::<Vec<((String, f32), Sound)>>();
 }
 
@@ -39,7 +39,19 @@ pub struct Sound {
 }
 
 impl Sound {
-    pub fn first_tick(&self) -> Option<Sound> {
+    /// pads silence with zeroes
+    pub fn first_tick(&mut self) -> &mut Self {
+        if let Some(ft) = self.first_tick_raw() {
+            self.samples = ft.samples;
+            return self;
+        } else {
+            let samples_per_tick = f32::ceil((self.sample_rate as f32 * 50.0) / 1000.0) as usize;
+            self.samples.resize(samples_per_tick, 0.0);
+            return self;
+        }
+    }
+
+    pub fn first_tick_raw(&self) -> Option<Sound> {
         let samples_per_tick = f32::ceil((self.sample_rate as f32 * 50.0) / 1000.0) as usize;
         if self.samples.len() < samples_per_tick {
             None
