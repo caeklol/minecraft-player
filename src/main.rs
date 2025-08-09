@@ -119,11 +119,8 @@ async fn fetch_predictable_sounds(
                     let sound_path = sound_path.join(&sound_name).with_extension("ogg");
                     let sound = sounds.iter().find(|(path, _)| *path == &sound_path);
                     if let Some(sound) = sound {
-                        let pitch_normalized = audio::adjust_pitch(sound.1, pitch).samples;
-                        result.insert(identifier, Sound {
-                            samples: pitch_normalized.to_vec(),
-                            sample_rate: sound.1.sample_rate
-                        });
+                        let mut sound = sound.1.clone();
+                        result.insert(identifier, sound.adjust_pitch(pitch).clone());
                     }
                 }
             }
@@ -150,8 +147,7 @@ async fn main() -> Result<(), Error> {
 
     let sounds = audio::permute_with_pitch(predictable_sounds, 8)
         .into_par_iter()
-        .map(|(id, sound)| (id, audio::mel(&processor, &audio::resample(&sound))))
-        .map(|(id, sound)| (id, sound.samples))
+        .map(|(id, mut sound)| (id, sound.resample(48000).mel(&processor).samples.clone()))
         .collect::<Vec<((String, f32), Vec<f32>)>>();
 
     let sound_ids = sounds.iter().map(|s| s.0.clone()).collect::<Vec<(String, f32)>>();
@@ -187,11 +183,11 @@ async fn main() -> Result<(), Error> {
 
     let chunks = samples.chunks_exact(samples_per_tick.try_into().unwrap()).collect::<Vec<&[f32]>>()
         .into_par_iter()
-        .map(|samples| audio::mel(&processor, &Sound {
+        .map(|samples| Sound {
             samples: samples.to_vec(),
             sample_rate
-        }).samples)
-        .map(|samples| samples.iter().map(|n| *n as f64).collect::<Vec<f64>>())
+        })
+        .map(|mut sound| sound.mel(&processor).samples.iter().map(|n| *n as f64).collect::<Vec<f64>>())
         .collect::<Vec<Vec<f64>>>();
 
     let start = Instant::now();

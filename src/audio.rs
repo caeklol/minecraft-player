@@ -19,7 +19,6 @@ pub struct Sound {
     pub sample_rate: usize
 }
 
-
 fn lerp(start: f32, end: f32, t: f32) -> f32 {
     start * (1.0 - t) + end * t
 }
@@ -35,116 +34,105 @@ pub fn permute_with_pitch(samples: Vec<(String, Sound)>, resolution: usize) -> V
 
     return zipped
         .into_par_iter()
-        .filter_map(|((id, pitch), sound)| Some(((id, pitch), first_tick(&adjust_pitch(&sound, pitch))?)))
+        .filter_map(|((id, pitch), mut sound)| Some(((id, pitch), sound.adjust_pitch(pitch).first_tick()?)))
         .collect::<Vec<((String, f32), Sound)>>();
 }
 
-pub fn first_tick(sound: &Sound) -> Option<Sound> {
-    let samples_per_tick = (sound.sample_rate * 50) / 1000;
-    if sound.samples.len() < samples_per_tick {
-        None
-    } else {
-        return Some(Sound {
-            samples: (sound.samples[0..samples_per_tick]).to_vec(),
-            sample_rate: sound.sample_rate
-        });
-    }
-}
-
-/// rescales audio samples by a given pitch by time dilation
-/// fills gaps linearly
-pub fn adjust_pitch(sound: &Sound, pitch: f32) -> Sound {
-    if pitch == 1.0 {
-        return sound.clone();
-    }
-
-    let samples = &sound.samples;
-    let new_length = (samples.len() as f32 / pitch) as usize;
-
-    let mut scaled = Vec::with_capacity(new_length);
-
-    for i in 0..new_length {
-        let original_index = i as f32 * pitch;
-
-        let lower_index = original_index.floor() as usize;
-        let upper_index = original_index.ceil() as usize;
-
-        let upper_index = if upper_index >= samples.len() { samples.len() - 1 } else { upper_index };
-
-        if lower_index != upper_index {
-            let t = original_index - lower_index as f32;
-            let interpolated_value = lerp(samples[lower_index], samples[upper_index], t);
-            scaled.push(interpolated_value);
+impl Sound {
+    pub fn first_tick(&self) -> Option<Sound> {
+        let samples_per_tick = (self.sample_rate * 50) / 1000;
+        if self.samples.len() < samples_per_tick {
+            None
         } else {
-            scaled.push(samples[lower_index]);
+            return Some(Sound {
+                samples: (self.samples[0..samples_per_tick]).to_vec(),
+                sample_rate: self.sample_rate
+            });
         }
     }
 
-    return Sound { 
-        sample_rate: sound.sample_rate,
-        samples: scaled
-    };
-}
+    /// handles up and downsampling
+    /// linear interpolation
+    pub fn resample(&mut self, new_rate: usize) -> &mut Self {
+        let input_len = self.samples.len();
+        let output_len = (input_len * new_rate) / self.sample_rate;
 
-/// handles up and downsampling
-/// linear interpolation
-/// samples to 48khz
-/// assumes 1 tick of audio
-pub fn resample(sound: &Sound) -> Sound {
-    let input_len = sound.samples.len();
-    let output_len = 2400;
+        if input_len == 0 || output_len == 0 {
+            panic!("resample failed, input or output len was 0");
+        }
 
-    if input_len == 0 || output_len == 0 {
-        return Sound {
-            samples: Vec::new(),
-            sample_rate: sound.sample_rate,
-        };
+        if input_len == output_len {
+            return self;
+        }
+
+        let mut resampled = Vec::with_capacity(output_len);
+        let step = (input_len - 1) as f32 / (output_len - 1) as f32;
+
+        for i in 0..output_len {
+            let pos = i as f32 * step;
+            let index = pos.floor() as usize;
+            let frac = pos - index as f32;
+
+            let s1 = self.samples.get(index).copied().unwrap_or(0.0);
+            let s2 = self.samples.get(index + 1).copied().unwrap_or(s1);
+
+            resampled.push(lerp(s1, s2, frac));
+        }
+
+        self.samples = resampled;
+        self.sample_rate = new_rate;
+
+        return self;
     }
 
-    if input_len == output_len {
-        return Sound {
-            samples: sound.samples.clone(),
-            sample_rate: sound.sample_rate,
-        };
+    /// rescales audio samples by a given pitch by time dilation
+    /// fills gaps linearly
+    pub fn adjust_pitch(&mut self, pitch: f32) -> &mut Self {
+        if pitch == 1.0 {
+            return self;
+        }
+
+        let new_length = (self.samples.len() as f32 / pitch) as usize;
+
+        let mut scaled = Vec::with_capacity(new_length);
+
+        for i in 0..new_length {
+            let original_index = i as f32 * pitch;
+
+            let lower_index = original_index.floor() as usize;
+            let upper_index = original_index.ceil() as usize;
+
+            let upper_index = if upper_index >= self.samples.len() { self.samples.len() - 1 } else { upper_index };
+
+            if lower_index != upper_index {
+                let t = original_index - lower_index as f32;
+                let interpolated_value = lerp(self.samples[lower_index], self.samples[upper_index], t);
+                scaled.push(interpolated_value);
+            } else {
+                scaled.push(self.samples[lower_index]);
+            }
+        }
+
+        self.samples = scaled;
+
+        return self;
     }
 
-    let mut resampled = Vec::with_capacity(output_len);
-    let step = (input_len - 1) as f32 / (output_len - 1) as f32;
+    /// applies filtering to boost mids and decrease lows
+    /// this makes it so important parts (voice, etc) are prioritized in
+    /// reconstruction rather than bass (drums, etc) which our ears are
+    /// more sensitive to
+    pub fn mel(&mut self, processor: &Processor) -> &mut Self {
+        let mut spectrum = processor.fft(self.clone());
 
-    for i in 0..output_len {
-        let pos = i as f32 * step;
-        let index = pos.floor() as usize;
-        let frac = pos - index as f32;
+        for bin in spectrum.iter_mut() {
+            let mel_weight = (2595.0 * (1.0 + (bin.freq as f32 / 700.0)).log10()) / 24000.0;
+            bin.complex *= mel_weight;
+        }
 
-        let s1 = sound.samples.get(index).copied().unwrap_or(0.0);
-        let s2 = sound.samples.get(index + 1).copied().unwrap_or(s1);
+        self.samples = processor.ifft(spectrum);
 
-        resampled.push(lerp(s1, s2, frac));
-    }
-
-    Sound {
-        samples: resampled,
-        sample_rate: 48000,
-    }
-}
-
-
-/// applies filtering to boost mids and decrease lows
-/// this makes it so important parts (voice, etc) are prioritized in
-/// reconstruction rather than bass (drums, etc) which our ears are
-/// more sensitive to
-pub fn mel(processor: &Processor, sound: &Sound) -> Sound {
-    let mut spectrum = processor.fft(sound.clone());
-    let sample_rate = sound.sample_rate;
-
-    for bin in spectrum.iter_mut() {
-        let mel_weight = (2595.0 * (1.0 + (bin.freq as f32 / 700.0)).log10()) / 24000.0;
-        bin.complex *= mel_weight;
-    }
-
-    Sound {
-       samples: processor.ifft(spectrum),
-       sample_rate
+        return self;
     }
 }
 
