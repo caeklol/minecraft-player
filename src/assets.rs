@@ -10,7 +10,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::{audio::{self, Sound}, mojang::{self, AssetIndex, Object, Version}};
+use crate::{audio::Sound, mojang::{self, AssetIndex, Object, Version}};
 
 #[derive(Parser, Debug)]
 pub enum FetchBehavior {
@@ -148,7 +148,30 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
 
             sound_objects
         },
-        FetchBehavior::CacheOnly => HashMap::new(),
+        FetchBehavior::CacheOnly => {
+            println!("reading local sound assets...");
+            let byte_results = stream::iter(&local_paths)
+                .map(|path| async move {
+                    (path, fs::read(path).await)
+                })
+                .buffer_unordered(512)
+                .collect::<HashMap<&PathBuf, Result<Vec<u8>, std::io::Error>>>()
+                .await;
+
+            for (sound_path, bytes_res) in byte_results {
+                let sound_path = sound_path.strip_prefix(&cache_path).unwrap();
+                match bytes_res {
+                    Ok(bytes) => {
+                        sound_assets_bytes.insert(sound_path.to_path_buf(), bytes.into());
+                    },
+                    Err(e) => {
+                        eprintln!("failed to read `{:?}`, '{}'", sound_path, e);
+                    },
+                }
+            }
+
+            HashMap::new()
+        },
     };
     
     if !remote_objects.is_empty() {
@@ -217,9 +240,9 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
             while let Some(channels) = ogg_reader.read_dec_packet_generic::<Vec<Vec<f32>>>()
                 .map_err(|e| anyhow!("failed to read packet for {}, {}", path.to_string_lossy(), e))? {
                     
-                if samples.len() >= (samples_per_tick * 2) { // *2 because max pitch is 2, so
-                                                             // will only ever need first 2 ticks
-                                                             // of the sample
+                if samples.len() >= (samples_per_tick * 5) { // max pitch is 2, and pitch is only
+                                                             // ever applied twice, so only ever
+                                                             // need 4 samples. 5 for leeway
                     break
                 }
 
