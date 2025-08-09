@@ -6,8 +6,12 @@ macro_rules! time_as_samples {
 }
 use std::{cmp::min, collections::HashMap, sync::Arc};
 
+use ndarray::Array2;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rustfft::{num_complex::Complex, Fft, FftPlanner};
 pub use time_as_samples;
+
+use crate::algebra;
 
 #[derive(Clone)]
 pub struct Sound {
@@ -20,7 +24,34 @@ fn lerp(start: f32, end: f32, t: f32) -> f32 {
     start * (1.0 - t) + end * t
 }
 
-/// rescales audio samples by a given pitch
+pub fn permute_with_pitch(samples: Vec<(String, Sound)>, resolution: usize) -> Vec<((String, f32), Sound)> {
+    let pitches = algebra::interpolated_range(0.5, 2.0, resolution);
+    let zipped = samples.into_iter().flat_map(|(st, s)| {
+        pitches
+            .iter()
+            .map(|p| ((st.clone(), *p), s.clone()))
+            .collect::<Vec<((String, f32), Sound)>>()
+    }).collect::<Vec<((String, f32), Sound)>>();
+
+    return zipped
+        .into_par_iter()
+        .filter_map(|((id, pitch), sound)| Some(((id, pitch), first_tick(&adjust_pitch(&sound, pitch))?)))
+        .collect::<Vec<((String, f32), Sound)>>();
+}
+
+pub fn first_tick(sound: &Sound) -> Option<Sound> {
+    let samples_per_tick = (sound.sample_rate * 50) / 1000;
+    if sound.samples.len() < samples_per_tick {
+        None
+    } else {
+        return Some(Sound {
+            samples: (sound.samples[0..samples_per_tick]).to_vec(),
+            sample_rate: sound.sample_rate
+        });
+    }
+}
+
+/// rescales audio samples by a given pitch by time dilation
 /// fills gaps linearly
 pub fn adjust_pitch(sound: &Sound, pitch: f32) -> Sound {
     if pitch == 1.0 {
@@ -51,119 +82,48 @@ pub fn adjust_pitch(sound: &Sound, pitch: f32) -> Sound {
 
     return Sound { 
         sample_rate: sound.sample_rate,
-        samples: samples.clone()
+        samples: scaled
     };
 }
 
-pub struct FftResult {
-    distribution: Vec<Frequency>
-}
+/// handles up and downsampling
+/// linear interpolation
+/// samples to 48khz
+/// assumes 1 tick of audio
+pub fn resample(sound: &Sound) -> Sound {
+    let input_len = sound.samples.len();
+    let output_len = 2400;
 
-impl FftResult {
-    pub fn as_volume(&self) -> Vec<f32> {
-        self.distribution
-            .iter()
-            .map(|f| f.volume)
-            .collect::<Vec<f32>>()
-    }
-}
-
-// everything here is heavily inspired from `audioviz`, but this is specifically 
-// optimized for audio samples of 1 tick minecraft sounds
-#[derive(Clone)]
-pub struct Frequency {
-    pub freq: f32,
-    pub volume: f32,
-    pub position: f32
-}
-
-impl Frequency {
-    pub fn empty() -> Self {
-        Frequency {
-            volume: 0.0,
-            freq: 0.0,
-            position: 0.0,
-        }
-    }
-}
-
-pub struct Processor {
-    fft_cache: HashMap<usize, Arc<dyn Fft<f32>>>
-}
-
-impl Processor {
-    pub fn new() -> Self {
-        let mut fft_planner = FftPlanner::new();
-        let mut fft_cache = HashMap::new();
-        fft_cache.insert(time_as_samples!(44100, 50), fft_planner.plan_fft_forward(time_as_samples!(44100, 50))); // # samples for 1 tick at 44.1kHz
-        fft_cache.insert(time_as_samples!(48000, 50), fft_planner.plan_fft_forward(time_as_samples!(48000, 50))); // # samples for 1 tick at 48kHz
-
-        Self {
-            fft_cache
-        } 
-    }
-
-    pub fn fft(&self, sound: Sound, resolution: usize) -> FftResult {
-        let length = sound.samples.len();
-        let mut buffer = Vec::new();
-
-        let mut samples = sound.samples;
-
-        // audioviz::spectrum::processor::Processor.apodize()
-        let window = apodize::hamming_iter(length).collect::<Vec<f64>>();
-        for i in 0..length {
-            samples[i] *= window[i] as f32;
-        }
-
-        for sample in samples {
-            buffer.push(Complex { re: sample, im: 0.0 });
-        }
-
-        let fft = match self.fft_cache.get(&length) {
-            Some(fft) => fft,
-            None => {
-                println!("cache miss, {} sample size, {} sample rate", length, sound.sample_rate);
-                &FftPlanner::new().plan_fft_forward(length)
-            },
+    if input_len == 0 || output_len == 0 {
+        return Sound {
+            samples: Vec::new(),
+            sample_rate: sound.sample_rate,
         };
+    }
 
-        // audioviz::spectrum::processor::Processor.fft()
-        fft.process(&mut buffer);
+    if input_len == output_len {
+        return Sound {
+            samples: sound.samples.clone(),
+            sample_rate: sound.sample_rate,
+        };
+    }
 
-        let normalized: Vec<f32> = buffer.iter().map(|x| x.norm()).collect();
-        let len = normalized.len() / 2 + 1;
-        let mut raw = normalized[..len].to_vec();
+    let mut resampled = Vec::with_capacity(output_len);
+    let step = (input_len - 1) as f32 / (output_len - 1) as f32;
 
-        // audioviz::spectrum::processor::Processor.normalize(Log)
-        for i in 0..raw.len() {
-            let percentage = (i + 1) as f32 / raw.len() as f32;
-            raw[i] *= 1.0 / 2_f32.log(percentage + 1.0);
-            raw[i] *= 0.2;
-        }
+    for i in 0..output_len {
+        let pos = i as f32 * step;
+        let index = pos.floor() as usize;
+        let frac = pos - index as f32;
 
-        let mut bins = Vec::new();
+        let s1 = sound.samples.get(index).copied().unwrap_or(0.0);
+        let s2 = sound.samples.get(index + 1).copied().unwrap_or(s1);
 
-        // audioviz::spectrum::processor::Processor.raw_to_freq_buffer()
-        for (i, val) in raw.iter().enumerate() {
-            let percentage: f32 = (i + 1) as f32 / raw.len() as f32;
-            bins.push(Frequency {
-                volume: *val,
-                position: percentage,
-                freq: percentage * (sound.sample_rate as f32 / 2.0),
-            });
-        }
+        resampled.push(lerp(s1, s2, frac));
+    }
 
-        // audioviz::spectrum::processor::Processor.interpolate(Gaps)
-        let mut o_buf: Vec<Frequency> = vec![Frequency::empty(); resolution];
-        for bin in bins {
-            let abs_pos = (o_buf.len() as f32 * bin.position) as usize;
-            if abs_pos < o_buf.len() {
-                if bin.volume > o_buf[abs_pos].volume {
-                    o_buf[abs_pos] = bin.clone();
-                }
-            }
-        }
-
-        FftResult { distribution: o_buf }
+    Sound {
+        samples: resampled,
+        sample_rate: 48000,
     }
 }
