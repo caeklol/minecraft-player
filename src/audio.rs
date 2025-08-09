@@ -8,7 +8,7 @@ use std::{cmp::min, collections::HashMap, sync::Arc};
 
 use ndarray::Array2;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use rustfft::{num_complex::Complex, Fft, FftPlanner};
+use rustfft::{num_complex::{Complex, Complex32, Complex64}, Fft, FftPlanner};
 pub use time_as_samples;
 
 use crate::algebra;
@@ -125,5 +125,119 @@ pub fn resample(sound: &Sound) -> Sound {
     Sound {
         samples: resampled,
         sample_rate: 48000,
+    }
+}
+
+
+/// applies filtering to boost mids and decrease lows
+/// this makes it so important parts (voice, etc) are prioritized in
+/// reconstruction rather than bass (drums, etc) which our ears are
+/// more sensitive to
+pub fn mel(processor: &Processor, sound: &Sound) -> Sound {
+    let mut spectrum = processor.fft(sound.clone());
+    let sample_rate = sound.sample_rate;
+
+    for bin in spectrum.iter_mut() {
+        let mel_weight = (2595.0 * (1.0 + (bin.freq as f32 / 700.0)).log10()) / 24000.0;
+        bin.complex *= mel_weight;
+    }
+
+    Sound {
+       samples: processor.ifft(spectrum),
+       sample_rate
+    }
+}
+
+// todo: handroll FFT and IFFT
+#[derive(Clone)]
+pub struct FftBin {
+    pub freq: f32,
+    pub complex: Complex32
+}
+
+impl FftBin {
+    pub fn empty() -> Self {
+        FftBin {
+            freq: 0.0,
+            complex: Complex32::new(0.0, 0.0)
+        }
+    }
+}
+
+pub struct Processor {
+    fft_cache: HashMap<usize, Arc<dyn Fft<f32>>>,
+    ifft_cache: HashMap<usize, Arc<dyn Fft<f32>>>
+}
+
+impl Processor {
+    pub fn new() -> Self {
+        let mut fft_planner = FftPlanner::new();
+        let mut fft_cache = HashMap::new();
+        let mut ifft_cache = HashMap::new();
+        fft_cache.insert(time_as_samples!(44100, 50), fft_planner.plan_fft_forward(time_as_samples!(44100, 50))); // # samples for 1 tick at 44.1kHz
+        fft_cache.insert(time_as_samples!(48000, 50), fft_planner.plan_fft_forward(time_as_samples!(48000, 50))); // # samples for 1 tick at 48kHz
+
+        ifft_cache.insert(time_as_samples!(44100, 50), fft_planner.plan_fft_inverse(time_as_samples!(44100, 50))); // # samples for 1 tick at 44.1kHz
+        ifft_cache.insert(time_as_samples!(48000, 50), fft_planner.plan_fft_inverse(time_as_samples!(48000, 50))); // # samples for 1 tick at 48kHz
+
+        Self {
+            fft_cache,
+            ifft_cache
+        } 
+    }
+
+    pub fn fft(&self, sound: Sound) -> Vec<FftBin> {
+        let length = sound.samples.len();
+        let mut buffer = Vec::with_capacity(length);
+
+        let mut samples = sound.samples;
+
+        // audioviz::spectrum::processor::Processor.apodize()
+        let window = apodize::hamming_iter(length).collect::<Vec<f64>>();
+        for i in 0..length {
+            samples[i] *= window[i] as f32;
+        }
+
+        for sample in samples {
+            buffer.push(Complex { re: sample, im: 0.0 });
+        }
+
+        let fft = match self.fft_cache.get(&length) {
+            Some(fft) => fft,
+            None => {
+                println!("cache miss, {} sample size, {} sample rate", length, sound.sample_rate);
+                &FftPlanner::new().plan_fft_forward(length)
+            },
+        };
+
+        fft.process(&mut buffer);
+
+        let mut bins: Vec<FftBin> = Vec::with_capacity(length);
+
+        for (index, bin) in buffer.iter().enumerate() {
+            bins.push(FftBin {
+                freq: index as f32 * sound.sample_rate as f32 / buffer.len() as f32,
+                complex: *bin
+            });
+        }
+
+        bins
+    }
+
+
+    pub fn ifft(&self, spectrum: Vec<FftBin>) -> Vec<f32> {
+        let mut buffer = spectrum.iter().map(|f| f.complex).collect::<Vec<Complex32>>();
+        let length = buffer.len();
+
+        let ifft = match self.ifft_cache.get(&length) {
+            Some(ifft) => ifft,
+            None => {
+                println!("cache miss, inverse, {} sample size", length);
+                &FftPlanner::new().plan_fft_inverse(length)
+            },
+        };
+
+        ifft.process(&mut buffer);
+        buffer.iter().map(|c| c.re).collect::<Vec<f32>>()
     }
 }

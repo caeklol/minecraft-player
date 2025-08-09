@@ -146,9 +146,12 @@ async fn main() -> Result<(), Error> {
 
     let predictable_sounds = fetch_predictable_sounds(&args.target_version, &args.assets, &behavior).await?;
 
+    let processor = audio::Processor::new();
+
     let sounds = audio::permute_with_pitch(predictable_sounds, 8)
         .into_par_iter()
-        .map(|(id, sound)| (id.clone(), audio::resample(&sound).samples))
+        .map(|(id, sound)| (id, audio::mel(&processor, &audio::resample(&sound))))
+        .map(|(id, sound)| (id, sound.samples))
         .collect::<Vec<((String, f32), Vec<f32>)>>();
 
     let sound_ids = sounds.iter().map(|s| s.0.clone()).collect::<Vec<(String, f32)>>();
@@ -184,7 +187,11 @@ async fn main() -> Result<(), Error> {
 
     let chunks = samples.chunks_exact(samples_per_tick.try_into().unwrap()).collect::<Vec<&[f32]>>()
         .into_par_iter()
-        .map(|samples_for_tick| samples_for_tick.iter().map(|n| *n as f64).collect::<Vec<f64>>())
+        .map(|samples| audio::mel(&processor, &Sound {
+            samples: samples.to_vec(),
+            sample_rate
+        }).samples)
+        .map(|samples| samples.iter().map(|n| *n as f64).collect::<Vec<f64>>())
         .collect::<Vec<Vec<f64>>>();
 
     let start = Instant::now();

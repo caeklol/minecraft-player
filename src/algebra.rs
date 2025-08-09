@@ -80,11 +80,12 @@ pub fn pgd_nnls(
 
     let wt = basis.t();
 
-    for _ in 0..iters {
+    for i in 0..iters {
         let wh = basis.dot(&h);
         let grad = wt.dot(&(wh - data));
         h = &h - &(grad * step);
         h.mapv_inplace(|x| x.max(0.0));
+        println!("{}", i);
     }
 
     h
