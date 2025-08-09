@@ -1,10 +1,15 @@
+extern crate openblas_src;
+#[macro_use]
+extern crate ndarray;
+
 use std::{collections::HashMap, path::PathBuf, time::{Instant, SystemTime}};
 
 use anyhow::{Error, anyhow};
 use clap::Parser;
 use inquire::Select;
-use minecraft_player::{assets::{self, AudioResourceLocation, FetchBehavior}, audio::{self, FftResult, Frequency, Processor, Sound}, mojang::{self, AssetIndex, Version}};
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use minecraft_player::{algebra::{self}, assets::{self, AudioResourceLocation, FetchBehavior}, audio::{self, FftResult, Frequency, Processor, Sound}, mojang::{self, AssetIndex, Version}};
+use ndarray::{Array1, Axis, Zip};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
 #[derive(clap::Args, Debug)]
 #[group(required = false, multiple = false)]
@@ -30,6 +35,9 @@ struct Args {
 
     #[arg(short, long, help = "input audio file")]
     input: PathBuf,
+
+    #[arg(short, long, help = "output mcfunctions")]
+    output: PathBuf,
 }
 
 
@@ -66,7 +74,7 @@ async fn fetch_predictable_sounds(
     version: &Option<String>,
     assets: &PathBuf,
     behavior: &FetchBehavior
-) -> Result<HashMap<String, Sound>, Error> {
+) -> Result<Vec<(String, Sound)>, Error> {
     let version = find_version(version).await?;
     
     let asset_index = match behavior {
@@ -111,22 +119,18 @@ async fn fetch_predictable_sounds(
                     let sound_path = sound_path.join(&sound_name).with_extension("ogg");
                     let sound = sounds.iter().find(|(path, _)| *path == &sound_path);
                     if let Some(sound) = sound {
-                        let sound = &sound.1;
-                        let pitch_normalized = audio::adjust_pitch(&sound, pitch).samples;
-                        let samples_per_tick = (sound.sample_rate * 50) / 1000;
-                        if pitch_normalized.len() >= samples_per_tick {
-                            result.insert(identifier, Sound {
-                                samples: pitch_normalized[0..samples_per_tick].to_vec(),
-                                sample_rate: sound.sample_rate
-                            });
-                        }
+                        let pitch_normalized = audio::adjust_pitch(sound.1, pitch).samples;
+                        result.insert(identifier, Sound {
+                            samples: pitch_normalized.to_vec(),
+                            sample_rate: sound.1.sample_rate
+                        });
                     }
                 }
             }
         }
     }
 
-    Ok(result) 
+    Ok(result.into_iter().collect::<Vec<(String, Sound)>>()) 
 }
 
 #[tokio::main]
@@ -140,22 +144,17 @@ async fn main() -> Result<(), Error> {
         _ => unimplemented!("impossible")
     };
 
-    let fft = Processor::new();
-    let fft_resolution = 2048;
-    let sounds = fetch_predictable_sounds(&args.target_version, &args.assets, &behavior).await?
+    let predictable_sounds = fetch_predictable_sounds(&args.target_version, &args.assets, &behavior).await?;
+
+    let sounds = audio::permute_with_pitch(predictable_sounds, 8)
         .into_par_iter()
-        .map(|(id, sound)| (id, fft.fft(sound, fft_resolution)))
-        .collect::<HashMap<String, FftResult>>();
+        .map(|(id, sound)| (id.clone(), audio::resample(&sound).samples))
+        .collect::<Vec<((String, f32), Vec<f32>)>>();
 
-    let sound_names = sounds.iter().map(|s| s.0.clone()).collect::<Vec<String>>();
-    let sound_bins = sounds.iter().map(|s| s.1.as_volume().iter().map(|n| *n as f64).collect::<Vec<f64>>()).collect::<Vec<Vec<f64>>>();
-    let flat_vec: Vec<f64> = sound_bins.clone().into_iter().flatten().collect();
-
-    let rows = sound_bins.len();
-    let cols = if rows > 0 { sound_bins[0].len() } else { 0 };
-    let shape = (rows, cols);
-
-    let sound_bins = ndarray::ArrayView2::from_shape(shape, &flat_vec)?.reversed_axes();
+    let sound_ids = sounds.iter().map(|s| s.0.clone()).collect::<Vec<(String, f32)>>();
+    let sound_bins = sounds.iter().map(|s| s.1.iter().map(|n| *n as f64).collect::<Vec<f64>>()).collect::<Vec<Vec<f64>>>();
+    let mut sound_bins = algebra::matrix_from_vecs(sound_bins)?
+        .reversed_axes();
 
     println!("found {} predictable sounds", sounds.len());
 
@@ -185,24 +184,42 @@ async fn main() -> Result<(), Error> {
 
     let chunks = samples.chunks_exact(samples_per_tick.try_into().unwrap()).collect::<Vec<&[f32]>>()
         .into_par_iter()
-        .map(|samples_for_tick| fft.fft(Sound {
-            samples: samples_for_tick.to_vec(),
-            sample_rate
-        }, fft_resolution).as_volume().iter().map(|n| *n as f64).collect::<Vec<f64>>())
+        .map(|samples_for_tick| samples_for_tick.iter().map(|n| *n as f64).collect::<Vec<f64>>())
         .collect::<Vec<Vec<f64>>>();
-    
-    println!("{}", chunks.len());
 
-    let amplitudes = chunks
-        .into_par_iter()
-        .map(|target| {
-            let start = Instant::now();
-            let target_array = ndarray::ArrayView::from(&target);
-            let (amplitudes, residual) = nnls::nnls(sound_bins, target_array);
-            println!("residual {}, {}ms elapsed", residual, start.elapsed().as_millis());
-            amplitudes.to_vec()
-        })
-        .collect::<Vec<Vec<f64>>>();
+    let start = Instant::now();
+    let mut chunks = algebra::matrix_from_vecs(chunks)?
+        .reversed_axes();
+
+    println!("chunks: {:?}", &chunks.dim());
+    println!("bins: {:?}", &sound_bins.dim());
+
+    algebra::normalize_to_global(&mut chunks);
+    algebra::normalize_to_global(&mut sound_bins);
+
+    println!("running NNLS...");
+    let mut approximation = algebra::pgd_nnls(&chunks, &sound_bins, 128, 1e-6);
+
+    algebra::normalize_to_global(&mut approximation);
+    algebra::apply_epsilon(&mut approximation, 1e-5);
+
+    println!("done! elapsed: {}ms", start.elapsed().as_millis());
+
+    println!("saving to datapack...");
+
+    for (index, amplitudes) in approximation.axis_iter(Axis(1)).enumerate() {
+        let mut amplitudes: Vec<(&f64, &(String, f32))> = amplitudes.iter().zip(&sound_ids).collect();
+        amplitudes.sort_by(|a, b| b.0.partial_cmp(a.0).unwrap());
+
+        let amplitudes = &amplitudes[0..64];
+        let mut output = String::new();
+        output.push_str("stopsound @a[tag=!nomusic] record\n");
+        for (amplitude, (name, pitch)) in amplitudes {
+            output.push_str(&format!("playsound {} record @a 0 -60 0 {:.5} {:.5} \n", name, amplitude, pitch));
+        }
+        output.push_str(&format!("schedule function audio:_/{} 1t append\n", index + 1));
+        tokio::fs::write(args.output.join("function/_/").join(index.to_string()).with_extension("mcfunction"), output).await?;
+    }
 
     return Ok(());
 }
