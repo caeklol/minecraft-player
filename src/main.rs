@@ -2,14 +2,14 @@ extern crate openblas_src;
 #[macro_use]
 extern crate ndarray;
 
-use std::{collections::HashMap, path::PathBuf, time::{Instant, SystemTime}};
+use std::{collections::HashMap, path::PathBuf, time::Instant};
 
 use anyhow::{Error, anyhow};
 use clap::Parser;
 use inquire::Select;
-use minecraft_player::{algebra::{self}, assets::{self, AudioResourceLocation, FetchBehavior}, audio::{self, FftResult, Frequency, Processor, Sound}, mojang::{self, AssetIndex, Version}};
-use ndarray::{Array1, Axis, Zip};
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+use minecraft_player::{algebra::{self}, assets::{self, AudioResourceLocation, FetchBehavior}, audio::{self, Sound}, mojang::{self, AssetIndex, Version}};
+use ndarray::Axis;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 #[derive(clap::Args, Debug)]
 #[group(required = false, multiple = false)]
