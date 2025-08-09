@@ -143,6 +143,8 @@ async fn main() -> Result<(), Error> {
 
     let predictable_sounds = fetch_predictable_sounds(&args.target_version, &args.assets, &behavior).await?;
 
+    println!("found {} predictable sounds", predictable_sounds.len());
+
     let processor = audio::Processor::new();
 
     let sounds = audio::permute_with_pitch(predictable_sounds, 8)
@@ -155,7 +157,6 @@ async fn main() -> Result<(), Error> {
     let mut sound_bins = algebra::matrix_from_vecs(sound_bins)?
         .reversed_axes();
 
-    println!("found {} predictable sounds", sounds.len());
 
     println!("reading target file");
     let mut reader = hound::WavReader::open(&args.input)?;
