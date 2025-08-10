@@ -7,6 +7,7 @@ macro_rules! time_as_samples {
 use std::{cmp::min, collections::HashMap, sync::Arc};
 
 use ndarray::Array2;
+use num_traits::Pow;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rustfft::{num_complex::{Complex, Complex32, Complex64}, Fft, FftPlanner};
 pub use time_as_samples;
@@ -127,8 +128,9 @@ impl Sound {
         let mut spectrum = processor.fft(self.clone());
 
         for bin in spectrum.iter_mut() {
-            let mel_weight = (2595.0 * (1.0 + (bin.freq as f32 / 700.0)).log10()) / 24000.0;
-            bin.complex *= mel_weight;
+            let mel_freq = 2595.0 * (1.0 + (bin.freq as f32 / 700.0)).log10();
+            let high_pass = (bin.freq as f32) / ((bin.freq as f32).pow(2.0) + (500 as f32).pow(2.0));
+            bin.complex *= mel_freq * high_pass;
         }
 
         self.samples = processor.ifft(spectrum);

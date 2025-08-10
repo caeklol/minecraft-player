@@ -147,7 +147,7 @@ async fn main() -> Result<(), Error> {
 
     let processor = audio::Processor::new();
 
-    let sounds = audio::permute_with_pitch(predictable_sounds, 8)
+    let sounds = audio::permute_with_pitch(predictable_sounds, 16)
         .into_par_iter()
         .map(|(id, mut sound)| (id, sound.mel(&processor).samples.clone()))
         .collect::<Vec<((String, f32), Vec<f32>)>>();
@@ -215,7 +215,7 @@ async fn main() -> Result<(), Error> {
         let mut amplitudes: Vec<(&f64, &(String, f32))> = amplitudes.iter().zip(&sound_ids).collect();
         amplitudes.sort_by(|a, b| b.0.partial_cmp(a.0).unwrap());
 
-        let amplitudes = &amplitudes[0..64];
+        let amplitudes = &amplitudes[0..32];
         let mut output = String::new();
         output.push_str("stopsound @a[tag=!nomusic] record\n");
         for (amplitude, (name, pitch)) in amplitudes {

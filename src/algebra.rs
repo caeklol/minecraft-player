@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::sync::atomic::AtomicUsize;
 use anyhow::Error;
 use ndarray::Array2;
-use ndarray_rand::RandomExt;
-use ndarray_rand::rand::distributions::Uniform;
+
+
 
 pub fn interpolated_range(a: f32, b: f32, r: usize) -> Vec<f32> {
     assert!(r >= 2);
@@ -27,6 +27,12 @@ pub fn normalize_to_global(array: &mut Array2<f64>) {
         for val in array.iter_mut() {
             *val /= max_val;
         }
+    }
+}
+
+pub fn dynamic_range(array: &mut Array2<f64>, gamma: f64) {
+    for x in array.iter_mut() {
+        *x = x.powf(gamma);
     }
 }
 
