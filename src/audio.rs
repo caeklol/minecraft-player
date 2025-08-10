@@ -140,9 +140,9 @@ impl Sound {
         let mut spectrum = processor.fft(self.clone());
 
         for bin in spectrum.iter_mut() {
-            let mel_freq = 2595.0 * (1.0 + (bin.freq as f32 / 700.0)).log10();
-            let high_pass = (bin.freq as f32) / ((bin.freq as f32).pow(2.0) + (300 as f32).pow(2.0));
-            bin.complex *= mel_freq * high_pass;
+            let mel_freq = (2595.0 * (1.0 + (bin.freq as f32 / 700.0)).log10()) / 24000.0;
+            let high_pass = (bin.freq as f32) / ((bin.freq as f32).pow(2.0) + (100 as f32).pow(2.0)) + 0.4;
+            bin.complex *= (mel_freq * 2.0) * (high_pass.min(1.0));
         }
 
         self.samples = processor.ifft(spectrum);

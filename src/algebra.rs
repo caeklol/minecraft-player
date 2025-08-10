@@ -1,9 +1,5 @@
-use std::collections::HashSet;
-use std::sync::atomic::AtomicUsize;
 use anyhow::Error;
-use ndarray::Array2;
-
-
+use ndarray::{Array2, Axis};
 
 pub fn interpolated_range(a: f32, b: f32, r: usize) -> Vec<f32> {
     assert!(r >= 2);
@@ -12,7 +8,7 @@ pub fn interpolated_range(a: f32, b: f32, r: usize) -> Vec<f32> {
     (0..r).map(|i| a + i as f32 * step).collect()
 }
 
-pub fn apply_epsilon(h: &mut Array2<f64>, epsilon: f64) {
+pub fn apply_epsilon(h: &mut Array2<f32>, epsilon: f32) {
     for val in h.iter_mut() {
         if *val < epsilon {
             *val = 0.0
@@ -20,8 +16,8 @@ pub fn apply_epsilon(h: &mut Array2<f64>, epsilon: f64) {
     }
 }
 
-pub fn normalize_to_global(array: &mut Array2<f64>) {
-    let max_val = array.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+pub fn normalize_to_global(array: &mut Array2<f32>) {
+    let max_val = array.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
     if max_val > 0.0 {
         for val in array.iter_mut() {
@@ -30,14 +26,14 @@ pub fn normalize_to_global(array: &mut Array2<f64>) {
     }
 }
 
-pub fn dynamic_range(array: &mut Array2<f64>, gamma: f64) {
+pub fn dynamic_range(array: &mut Array2<f32>, gamma: f32) {
     for x in array.iter_mut() {
         *x = x.powf(gamma);
     }
 }
 
-pub fn matrix_from_vecs(matrix_vec: Vec<Vec<f64>>) -> Result<Array2<f64>, Error> {
-    let flat_vec: Vec<f64> = matrix_vec.clone().into_iter().flatten().collect();
+pub fn matrix_from_vecs(matrix_vec: Vec<Vec<f32>>) -> Result<Array2<f32>, Error> {
+    let flat_vec: Vec<f32> = matrix_vec.clone().into_iter().flatten().collect();
 
     let rows = matrix_vec.len();
     let cols = if rows > 0 { matrix_vec[0].len() } else { 0 };
@@ -72,17 +68,17 @@ pub fn matrix_from_vecs(matrix_vec: Vec<Vec<f64>>) -> Result<Array2<f64>, Error>
 /// W^T W or W^T V by doing W^T(Wh-V) which is equivalent via
 /// distribution, saving precious memory. lovely!
 pub fn pgd_nnls(
-    data: &Array2<f64>,
-    basis: &Array2<f64>,
+    data: &Array2<f32>,
+    basis: &Array2<f32>,
     iters: usize,
-    step: f64,
-) -> Array2<f64> {
+    step: f32,
+) -> Array2<f32> {
     let (m1, n) = data.dim();
     let (m2, r) = basis.dim();
 
     assert_eq!(m1, m2);
 
-    let mut h = Array2::<f64>::zeros((r, n));
+    let mut h = Array2::<f32>::zeros((r, n));
 
     let wt = basis.t();
 
@@ -91,6 +87,7 @@ pub fn pgd_nnls(
         let grad = wt.dot(&(wh - data));
         h = &h - &(grad * step);
         h.mapv_inplace(|x| x.max(0.0));
+
         println!("{}", i);
     }
 

@@ -146,16 +146,19 @@ async fn main() -> Result<(), Error> {
 
     let processor = audio::Processor::new();
 
-    let sounds = audio::permute_with_pitch(predictable_sounds, 16)
+    let sounds = audio::permute_with_pitch(predictable_sounds, 256)
         .into_par_iter()
-        .map(|(id, mut sound)| (id, sound.mel(&processor).samples.clone()))
-        .collect::<Vec<((String, f32), Vec<f32>)>>();
+        .map(|(id, mut sound)| (id, sound.mel(&processor).clone()))
+        .collect::<Vec<((String, f32), Sound)>>();
 
     let sound_ids = sounds.iter().map(|s| s.0.clone()).collect::<Vec<(String, f32)>>();
-    let sound_bins = sounds.iter().map(|s| s.1.iter().map(|n| *n as f64).collect::<Vec<f64>>()).collect::<Vec<Vec<f64>>>();
+
+    let sound_bins = sounds.iter().map(|s| s.1.samples.clone()).collect::<Vec<Vec<f32>>>();
+
     let mut sound_bins = algebra::matrix_from_vecs(sound_bins)?
         .reversed_axes();
 
+    drop(sounds);
 
     println!("reading target file");
     let mut reader = hound::WavReader::open(&args.input)?;
@@ -187,8 +190,11 @@ async fn main() -> Result<(), Error> {
             samples: samples.to_vec(),
             sample_rate
         })
-        .map(|mut sound| sound.mel(&processor).samples.iter().map(|n| *n as f64).collect::<Vec<f64>>())
-        .collect::<Vec<Vec<f64>>>();
+        .map(|mut sound| sound.mel(&processor).clone())
+        .map(|sound| sound.samples)
+        .collect::<Vec<Vec<f32>>>();
+
+    drop(samples);
 
     let start = Instant::now();
     let mut chunks = algebra::matrix_from_vecs(chunks)?
@@ -206,23 +212,52 @@ async fn main() -> Result<(), Error> {
     algebra::normalize_to_global(&mut approximation);
     algebra::apply_epsilon(&mut approximation, 1e-5);
 
+    drop(chunks);
+
     println!("done! elapsed: {}ms", start.elapsed().as_millis());
 
     println!("saving to datapack...");
 
-    for (index, amplitudes) in approximation.axis_iter(Axis(1)).enumerate() {
-        let mut amplitudes: Vec<(&f64, &(String, f32))> = amplitudes.iter().zip(&sound_ids).collect();
-        amplitudes.sort_by(|a, b| b.0.partial_cmp(a.0).unwrap());
+    let mut writer = hound::WavWriter::create("output.wav", hound::WavSpec {
+        channels: 1,
+        sample_rate: 48000,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    }).unwrap();
 
-        let amplitudes = &amplitudes[0..32];
+    for (index, amplitudes) in approximation.axis_iter(Axis(1)).enumerate() {
+        let mut amplitudes: Vec<(usize, (&f32, &(String, f32)))> = amplitudes.iter().zip(&sound_ids).enumerate().collect();
+        amplitudes.sort_by(|a, b| b.1.0.partial_cmp(a.1.0).unwrap());
+
+        let amplitudes = &amplitudes[0..64];
         let mut output = String::new();
         output.push_str("stopsound @a[tag=!nomusic] record\n");
-        for (amplitude, (name, pitch)) in amplitudes {
+        let mut output_sample = vec![0.0; 2400];
+
+        for (i, (amplitude, (name, pitch))) in amplitudes {
             output.push_str(&format!("playsound {} record @a 0 -60 0 {:.5} {:.5} \n", name, amplitude, pitch));
+
+            let mut sound = Sound {
+                samples: sound_bins.column(*i).to_vec(),
+                sample_rate: 48000
+            };
+
+            sound.adjust_volume(**amplitude);
+
+            for (j, sample) in sound.samples.iter().enumerate() {
+                output_sample[j] += sample;
+            }
         }
+
+        for sample in output_sample {
+            writer.write_sample(sample).unwrap();
+        }
+
         output.push_str(&format!("schedule function audio:_/{} 1t append\n", index + 1));
         tokio::fs::write(args.output.join("function/_/").join(index.to_string()).with_extension("mcfunction"), output).await?;
     }
+
+    writer.finalize().unwrap();
 
     return Ok(());
 }
