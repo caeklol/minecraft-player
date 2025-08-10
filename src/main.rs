@@ -101,26 +101,25 @@ async fn fetch_predictable_sounds(
         if def.sounds.len() == 1 {
             if let Some(sound) = def.sounds.get(0) {
                 let resource = match sound {
-                    AudioResourceLocation::Partial(s) => Some((PathBuf::from(s), 1.0)),
+                    AudioResourceLocation::Partial(s) => Some((PathBuf::from(s), 1.0, 1.0)),
                     AudioResourceLocation::Full(resource_location) => {
-                        if let Some(resource_type) = &resource_location.resource_type {
-                            if resource_type == "sound" {
-                                Some((resource_location.name.clone(), resource_location.pitch.unwrap_or(1.0)))
-                            } else {
-                                None
-                            }
-                        } else {
-                            Some((resource_location.name.clone(), resource_location.pitch.unwrap_or(1.0)))
+                        match &resource_location.resource_type {
+                            Some(resource_type) if resource_type != "sound" => None,
+                            _ => Some((
+                                    resource_location.name.clone(),
+                                    resource_location.pitch.unwrap_or(1.0),
+                                    resource_location.volume.unwrap_or(1.0)
+                            )),
                         }
                     },
                 };
 
-                if let Some((sound_name, pitch)) = resource {
+                if let Some((sound_name, pitch, volume)) = resource {
                     let sound_path = sound_path.join(&sound_name).with_extension("ogg");
                     let sound = sounds.iter().find(|(path, _)| *path == &sound_path);
                     if let Some(sound) = sound {
                         let mut sound = sound.1.clone();
-                        result.insert(identifier, sound.adjust_pitch(pitch).resample(48000).clone());
+                        result.insert(identifier, sound.adjust_pitch(pitch).adjust_volume(volume).resample(48000).clone());
                     }
                 }
             }

@@ -120,6 +120,18 @@ impl Sound {
         return self;
     }
 
+    pub fn adjust_volume(&mut self, volume: f32) -> &mut Self {
+        if volume == 1.0 {
+            return self;
+        }
+
+        for sample in &mut self.samples {
+            *sample = *sample * volume;
+        }
+
+        return self;
+    }
+
     /// applies filtering to boost mids and decrease lows
     /// this makes it so important parts (voice, etc) are prioritized in
     /// reconstruction rather than bass (drums, etc) which our ears are
@@ -129,7 +141,7 @@ impl Sound {
 
         for bin in spectrum.iter_mut() {
             let mel_freq = 2595.0 * (1.0 + (bin.freq as f32 / 700.0)).log10();
-            let high_pass = (bin.freq as f32) / ((bin.freq as f32).pow(2.0) + (500 as f32).pow(2.0));
+            let high_pass = (bin.freq as f32) / ((bin.freq as f32).pow(2.0) + (300 as f32).pow(2.0));
             bin.complex *= mel_freq * high_pass;
         }
 
