@@ -36,8 +36,11 @@ struct Args {
     #[arg(short, long, help = "input audio file")]
     input: PathBuf,
 
-    #[arg(short, long, help = "output mcfunctions")]
+    #[arg(short, long, help = "output datapack directory")]
     output: PathBuf,
+
+    #[arg(long, help = "output reconstruction as `.wav`")]
+    reconstruction: Option<PathBuf>,
 }
 
 
@@ -207,10 +210,11 @@ async fn main() -> Result<(), Error> {
     algebra::normalize_to_global(&mut sound_bins);
 
     println!("running NNLS...");
-    let mut approximation = algebra::pgd_nnls(&chunks, &sound_bins, 128, 1e-6);
+    let mut approximation = algebra::pgd_nnls(&chunks, &sound_bins, 256, 1e-6);
 
     algebra::normalize_to_global(&mut approximation);
     algebra::apply_epsilon(&mut approximation, 1e-5);
+
 
     drop(chunks);
 
@@ -218,12 +222,15 @@ async fn main() -> Result<(), Error> {
 
     println!("saving to datapack...");
 
-    let mut writer = hound::WavWriter::create("output.wav", hound::WavSpec {
-        channels: 1,
-        sample_rate: 48000,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    }).unwrap();
+    let mut writer = match args.reconstruction {
+        Some(output_path) => Some(hound::WavWriter::create(output_path, hound::WavSpec {
+            channels: 1,
+            sample_rate: 48000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        }).unwrap()),
+        None => None,
+    };
 
     for (index, amplitudes) in approximation.axis_iter(Axis(1)).enumerate() {
         let mut amplitudes: Vec<(usize, (&f32, &(String, f32)))> = amplitudes.iter().zip(&sound_ids).enumerate().collect();
@@ -232,32 +239,38 @@ async fn main() -> Result<(), Error> {
         let amplitudes = &amplitudes[0..64];
         let mut output = String::new();
         output.push_str("stopsound @a[tag=!nomusic] record\n");
-        let mut output_sample = vec![0.0; 2400];
+        let mut current_sample = vec![0.0; 2400];
 
         for (i, (amplitude, (name, pitch))) in amplitudes {
             output.push_str(&format!("playsound {} record @a 0 -60 0 {:.5} {:.5} \n", name, amplitude, pitch));
 
-            let mut sound = Sound {
-                samples: sound_bins.column(*i).to_vec(),
-                sample_rate: 48000
-            };
+            if writer.is_some() {
+                let mut sound = Sound {
+                    samples: sound_bins.column(*i).to_vec(),
+                    sample_rate: 48000
+                };
 
-            sound.adjust_volume(**amplitude);
+                sound.adjust_volume(**amplitude);
 
-            for (j, sample) in sound.samples.iter().enumerate() {
-                output_sample[j] += sample;
+                for (j, sample) in sound.samples.iter().enumerate() {
+                    current_sample[j] += sample;
+                }
             }
         }
 
-        for sample in output_sample {
-            writer.write_sample(sample).unwrap();
+        if let Some(writer) = &mut writer {
+            for sample in current_sample {
+                writer.write_sample(sample).expect("failed to write smaple");
+            }
         }
 
         output.push_str(&format!("schedule function audio:_/{} 1t append\n", index + 1));
         tokio::fs::write(args.output.join("function/_/").join(index.to_string()).with_extension("mcfunction"), output).await?;
     }
-
-    writer.finalize().unwrap();
+    
+    if let Some(writer) = writer {
+        writer.finalize().unwrap();
+    }
 
     return Ok(());
 }
