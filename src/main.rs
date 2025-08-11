@@ -149,7 +149,7 @@ async fn main() -> Result<(), Error> {
 
     let processor = audio::Processor::new();
 
-    let sounds = audio::permute_with_pitch(predictable_sounds, 256)
+    let sounds = audio::permute_with_pitch(predictable_sounds, 128)
         .into_par_iter()
         .map(|(id, mut sound)| (id, sound.mel(&processor).clone()))
         .collect::<Vec<((String, f32), Sound)>>();
@@ -183,11 +183,15 @@ async fn main() -> Result<(), Error> {
 
     let sample_rate: usize = reader.spec().sample_rate.try_into().unwrap();
 
-    // 20 minecraft ticks per second, (1s/20t) = 0.05s/t = 50ms/t
-    let samples_per_tick = audio::time_as_samples!(50, sample_rate); 
-    println!("sample rate of {}Hz, splitting input into {} sized chunks", sample_rate, samples_per_tick);
+    let mut target_audio = Sound {
+        samples,
+        sample_rate
+    };
 
-    let chunks = samples.chunks_exact(samples_per_tick.try_into().unwrap()).collect::<Vec<&[f32]>>()
+    println!("resampling input");
+    target_audio.resample(48000);
+
+    let chunks = target_audio.samples.chunks_exact(2400).collect::<Vec<&[f32]>>()
         .into_par_iter()
         .map(|samples| Sound {
             samples: samples.to_vec(),
@@ -197,7 +201,7 @@ async fn main() -> Result<(), Error> {
         .map(|sound| sound.samples)
         .collect::<Vec<Vec<f32>>>();
 
-    drop(samples);
+    drop(target_audio);
 
     let start = Instant::now();
     let mut chunks = algebra::matrix_from_vecs(chunks)?
@@ -214,7 +218,6 @@ async fn main() -> Result<(), Error> {
 
     algebra::normalize_to_global(&mut approximation);
     algebra::apply_epsilon(&mut approximation, 1e-5);
-
 
     drop(chunks);
 
