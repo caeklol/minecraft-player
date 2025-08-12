@@ -146,7 +146,7 @@ async fn main() -> Result<(), Error> {
 
     let processor = audio::Processor::new();
 
-    let sounds = audio::permute_with_pitch(predictable_sounds, 16)
+    let sounds = audio::permute_with_pitch(predictable_sounds, 64)
         .into_par_iter()
         .map(|(id, mut sound)| (id, sound.mel(&processor).clone()))
         .collect::<Vec<((String, f32), Sound)>>();
@@ -211,16 +211,18 @@ async fn main() -> Result<(), Error> {
     algebra::normalize_to_minus_plus(&mut sound_bins);
 
     println!("running NNLS...");
-    let mut approximation = algebra::pgd_nnls(chunks.view(), sound_bins.view(), 10, 1e-5);
+
+    let mut approximation = algebra::pgd_nnls(chunks.view(), sound_bins.view(), 10, 1e-6);
 
     algebra::normalize_to_global(&mut approximation);
-    algebra::round_to(&mut approximation, 5);
 
     println!("done! elapsed: {}ms", start.elapsed().as_millis());
 
+    
+
     println!("saving to datapack...");
 
-    let mut writer = match args.reconstruction {
+    let mut writer = match &args.reconstruction {
         Some(output_path) => Some(hound::WavWriter::create(output_path, hound::WavSpec {
             channels: 1,
             sample_rate: 48000,
@@ -230,6 +232,12 @@ async fn main() -> Result<(), Error> {
         None => None,
     };
 
+    let sound_bins = match &args.reconstruction {
+        Some(_) => Some(&sound_bins),
+        None => None // drop
+    };
+
+    
     for (index, amplitudes) in approximation.axis_iter(Axis(1)).enumerate() {
         let mut amplitudes: Vec<(usize, (&f32, &(String, f32)))> = amplitudes.iter().zip(&sound_ids).enumerate().collect();
         amplitudes.sort_by(|a, b| b.1.0.partial_cmp(a.1.0).unwrap());
@@ -244,7 +252,7 @@ async fn main() -> Result<(), Error> {
 
             if writer.is_some() {
                 let mut sound = Sound {
-                    samples: sound_bins.column(*i).to_vec(),
+                    samples: sound_bins.unwrap().column(*i).to_vec(),
                     sample_rate: 48000
                 };
 
