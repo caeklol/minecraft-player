@@ -207,14 +207,14 @@ async fn main() -> Result<(), Error> {
     println!("chunks: {:?}", &chunks.dim());
     println!("bins: {:?}", &sound_bins.dim());
 
-    algebra::normalize_to_global(&mut chunks);
-    algebra::normalize_to_global(&mut sound_bins);
+    algebra::normalize_to_minus_plus(&mut chunks);
+    algebra::normalize_to_minus_plus(&mut sound_bins);
 
     println!("running NNLS...");
-    let mut approximation = algebra::pgd_nnls(chunks.view(), sound_bins.view(), 200, 1e-5);
+    let mut approximation = algebra::pgd_nnls(chunks.view(), sound_bins.view(), 10, 1e-5);
 
     algebra::normalize_to_global(&mut approximation);
-    algebra::apply_epsilon(&mut approximation, 1e-5);
+    algebra::round_to(&mut approximation, 5);
 
     println!("done! elapsed: {}ms", start.elapsed().as_millis());
 
@@ -263,7 +263,7 @@ async fn main() -> Result<(), Error> {
         }
 
         output.push_str(&format!("schedule function audio:_/{} 1t append\n", index + 1));
-        tokio::fs::write(args.output.join("function/_/").join(index.to_string()).with_extension("mcfunction"), output).await?;
+        tokio::fs::write(args.output.join(index.to_string()).with_extension("mcfunction"), output).await?;
     }
     
     if let Some(writer) = writer {

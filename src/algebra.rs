@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use anyhow::Error;
-use ndarray::{Array2, ArrayView2, Axis, ShapeBuilder};
+use ndarray::{Array2, ArrayView2};
 use ocl::{Buffer, ProQue};
 
 static KERNEL: &str = include_str!("pgd.ocl");
@@ -13,10 +13,25 @@ pub fn interpolated_range(a: f32, b: f32, r: usize) -> Vec<f32> {
     (0..r).map(|i| a + i as f32 * step).collect()
 }
 
-pub fn apply_epsilon(h: &mut Array2<f32>, epsilon: f32) {
+pub fn round_to(h: &mut Array2<f32>, decimals: usize) {
     for val in h.iter_mut() {
-        if *val < epsilon {
-            *val = 0.0
+        *val = (*val * 10f32.powi(decimals as i32)).round() / 10f32.powi(decimals as i32)
+    }
+}
+
+pub fn normalize_to_minus_plus(array: &mut Array2<f32>) {
+    let min_val = array.iter().cloned().fold(f32::INFINITY, f32::min);
+    let max_val = array.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+    let range = max_val - min_val;
+
+    if range > 0.0 {
+        for val in array.iter_mut() {
+            *val = 2.0 * (*val - min_val) / range - 1.0;
+        }
+    } else {
+        for val in array.iter_mut() {
+            *val = 0.0;
         }
     }
 }
@@ -207,16 +222,18 @@ pub fn pgd_nnls(
 
     for i in 0..iters {
         let start = Instant::now();
-        println!("whv");
         unsafe { k_whv.enq().unwrap(); }
-        //pq.finish().unwrap();
-        println!("grad");
+        pq.finish().unwrap();
+        println!("whv done: {}ms", start.elapsed().as_millis());
+        let start = Instant::now();
         unsafe { k_grad.enq().unwrap(); }
-        //pq.finish().unwrap();
-        println!("update");
+        pq.finish().unwrap();
+        println!("grad: {}ms", start.elapsed().as_millis());
+        let start = Instant::now();
         unsafe { k_update.enq().unwrap(); }
         pq.finish().unwrap();
-        println!("iter {}, elapsed: {}s", i, start.elapsed().as_secs());
+        println!("update: {}ms", start.elapsed().as_millis());
+        println!("iter {}, elapsed: {}ms", i, start.elapsed().as_millis());
     }
 
     println!("reading...");

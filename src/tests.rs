@@ -1,3 +1,6 @@
+use anyhow::Error;
+use ndarray::Array2;
+
 use crate::algebra;
 
 fn gen_frequency(hz: f32, sample_rate: usize, duration_ms: usize) -> crate::audio::Sound {
@@ -56,4 +59,41 @@ fn test_layout() {
     let flattened: Vec<f32> = matrix.into_iter().flatten().collect();
     let ndarray_vec: Vec<f32> = matrix_ndarray.iter().cloned().collect();
     assert!(flattened.iter().partial_cmp(&ndarray_vec).expect("failed to compare").is_eq());
+}
+
+fn nnls_test<T: Fn(Array2<f32>, Array2<f32>) -> Array2<f32>>(f: T) -> Result<Vec<f32>, Error> {
+    let chunks = vec![
+        vec![0.0, -1.0, 0.0],
+        vec![0.0, 0.5, 0.0],
+        vec![1.0, 0.0, 1.0],
+        vec![0.0, 0.0, 1.0],
+    ];
+
+    let target = vec![
+        vec![0.0, 0.5, 1.0],
+        vec![0.0, -1.0, 1.0],
+        vec![1.0, -0.5, 0.0]
+    ];
+    let mut chunks = algebra::matrix_from_vecs(chunks).expect("failed to conv to matrix")
+        .reversed_axes();
+    let mut target = algebra::matrix_from_vecs(target).expect("failed to conv to matrix");
+
+    algebra::normalize_to_minus_plus(&mut chunks);
+    algebra::normalize_to_minus_plus(&mut target);
+
+    let mut approx = f(chunks, target);
+
+    algebra::round_to(&mut approx, 5);
+    algebra::normalize_to_global(&mut approx);
+
+    return Ok(Vec::from(approx.as_slice().unwrap()));
+}
+
+#[test]
+fn test_nnls() {
+    let approx1 = nnls_test(|target, chunks| algebra::cpu_pgd_nnls(target.view(), chunks.view(), 200, 1e-6)).unwrap();
+    let approx2 = nnls_test(|target, chunks| algebra::pgd_nnls(target.view(), chunks.view(), 200, 1e-6)).unwrap();
+
+    assert_eq!(approx1, [0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 0.0], "cpu failed");
+    assert_eq!(approx2, [0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 0.0], "gpu failed");
 }
