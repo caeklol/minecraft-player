@@ -12,7 +12,7 @@ futures = "0.3.31"
 hound = "3.5.1"
 inquire = "0.7.5"
 lewton = "0.10.2"
-ndarray = "0.16.1"
+ndarray = { version = "0.16.1", features = ["matrixmultiply-threading"] }
 ndarray-rand = "0.15.0"
 num-traits = "0.2.19"
 ocl = "0.19.7"

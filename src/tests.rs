@@ -127,5 +127,5 @@ fn test_nnls() {
         .map(|(v1, v2)| v2-v1)
         .fold(f32::NEG_INFINITY, f32::max);
 
-    assert!(max_err < 0.000001);
+    assert!(max_err < 0.000001, "GPU NNLS != CPU NNLS");
 }
