@@ -1,7 +1,4 @@
-extern crate openblas_src;
-#[macro_use]
-extern crate ndarray;
-
+extern crate ocl;
 use std::{collections::HashMap, path::PathBuf, time::Instant};
 
 use anyhow::{Error, anyhow};
@@ -149,7 +146,7 @@ async fn main() -> Result<(), Error> {
 
     let processor = audio::Processor::new();
 
-    let sounds = audio::permute_with_pitch(predictable_sounds, 128)
+    let sounds = audio::permute_with_pitch(predictable_sounds, 16)
         .into_par_iter()
         .map(|(id, mut sound)| (id, sound.mel(&processor).clone()))
         .collect::<Vec<((String, f32), Sound)>>();
@@ -192,7 +189,7 @@ async fn main() -> Result<(), Error> {
     target_audio.resample(48000);
 
     let chunks = target_audio.samples.chunks_exact(2400).collect::<Vec<&[f32]>>()
-        .into_par_iter()
+        .into_iter()
         .map(|samples| Sound {
             samples: samples.to_vec(),
             sample_rate
@@ -214,12 +211,10 @@ async fn main() -> Result<(), Error> {
     algebra::normalize_to_global(&mut sound_bins);
 
     println!("running NNLS...");
-    let mut approximation = algebra::pgd_nnls(&chunks, &sound_bins, 256, 1e-6);
+    let mut approximation = algebra::pgd_nnls(chunks.view(), sound_bins.view(), 200, 1e-5);
 
     algebra::normalize_to_global(&mut approximation);
     algebra::apply_epsilon(&mut approximation, 1e-5);
-
-    drop(chunks);
 
     println!("done! elapsed: {}ms", start.elapsed().as_millis());
 

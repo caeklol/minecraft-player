@@ -1,5 +1,10 @@
+use std::time::Instant;
+
 use anyhow::Error;
-use ndarray::{Array2, Axis};
+use ndarray::{Array2, ArrayView2, Axis, ShapeBuilder};
+use ocl::{Buffer, ProQue};
+
+static KERNEL: &str = include_str!("pgd.ocl");
 
 pub fn interpolated_range(a: f32, b: f32, r: usize) -> Vec<f32> {
     assert!(r >= 2);
@@ -40,7 +45,8 @@ pub fn matrix_from_vecs(matrix_vec: Vec<Vec<f32>>) -> Result<Array2<f32>, Error>
     let shape = (rows, cols);
 
     return Ok(ndarray::ArrayView2::from_shape(shape, &flat_vec)?
-            .to_owned());
+        .to_owned());
+
 }
 
 /// data is V, dimensioned (m, n)
@@ -67,9 +73,9 @@ pub fn matrix_from_vecs(matrix_vec: Vec<Vec<f32>>) -> Result<Array2<f32>, Error>
 /// you can calculate the gradient above without explicitly storing
 /// W^T W or W^T V by doing W^T(Wh-V) which is equivalent via
 /// distribution, saving precious memory. lovely!
-pub fn pgd_nnls(
-    data: &Array2<f32>,
-    basis: &Array2<f32>,
+pub fn cpu_pgd_nnls(
+    data: ArrayView2<f32>,
+    basis: ArrayView2<f32>,
     iters: usize,
     step: f32,
 ) -> Array2<f32> {
@@ -83,13 +89,140 @@ pub fn pgd_nnls(
     let wt = basis.t();
 
     for i in 0..iters {
+        let start = Instant::now();
         let wh = basis.dot(&h);
         let grad = wt.dot(&(wh - data));
         h = &h - &(grad * step);
         h.mapv_inplace(|x| x.max(0.0));
-
-        println!("{}", i);
+        println!("iter {}, elapsed: {}s", i, start.elapsed().as_secs());
     }
 
     h
 }
+
+pub fn pgd_nnls(
+    data: ArrayView2<f32>,
+    basis: ArrayView2<f32>,
+    iters: usize,
+    step: f32,
+) -> Array2<f32> {
+    let (m1, n) = data.dim();
+    let (m2, r) = basis.dim();
+
+    assert_eq!(m1, m2);
+
+    // row-major
+    let v: Vec<f32> = data.iter().cloned().collect();
+    let w: Vec<f32> = basis.iter().cloned().collect();
+    let mut h: Vec<f32> = vec![0.0; r * n];
+
+    let mut w_t = vec![0.0f32; r * m1];
+    for i in 0..m1 {
+        for j in 0..r {
+            w_t[j * m1 + i] = basis[(i, j)];
+        }
+    }
+
+    let pq = ProQue::builder()
+        .src(KERNEL)
+        .dims((r.max(m1), n))
+        .build()
+        .unwrap();
+
+    let buffer_w = Buffer::<f32>::builder()
+        .queue(pq.queue().clone())
+        .flags(ocl::flags::MEM_READ_ONLY)
+        .len(w.len())
+        .copy_host_slice(&w)
+        .build()
+        .unwrap();
+
+    let buffer_w_t = Buffer::<f32>::builder()
+        .queue(pq.queue().clone())
+        .flags(ocl::flags::MEM_READ_ONLY)
+        .len(w_t.len())
+        .copy_host_slice(&w_t)
+        .build()
+        .unwrap();
+
+    let buffer_v = Buffer::<f32>::builder()
+        .queue(pq.queue().clone())
+        .flags(ocl::flags::MEM_READ_ONLY)
+        .len(v.len())
+        .copy_host_slice(&v)
+        .build()
+        .unwrap();
+
+    let buffer_h = Buffer::<f32>::builder()
+        .queue(pq.queue().clone())
+        .len(h.len())
+        .copy_host_slice(&h)
+        .build()
+        .unwrap();
+
+    let buffer_whv = Buffer::<f32>::builder()
+        .queue(pq.queue().clone())
+        .len(m1 * n)
+        .build()
+        .unwrap();
+
+    let buffer_grad = Buffer::<f32>::builder()
+        .queue(pq.queue().clone())
+        .len(r * n)
+        .build()
+        .unwrap();
+
+    let k_whv = pq.kernel_builder("gemm_whv")
+        .global_work_size((m1, n))
+        .arg(&buffer_w)
+        .arg(&buffer_h)
+        .arg(&buffer_v)
+        .arg(&buffer_whv)
+        .arg(m1 as u32)
+        .arg(n as u32)
+        .arg(r as u32)
+        .build()
+        .unwrap();
+
+    let k_grad = pq.kernel_builder("gemm_grad")
+        .global_work_size((r, n))
+        .arg(&buffer_w_t)
+        .arg(&buffer_whv)
+        .arg(&buffer_grad)
+        .arg(r as u32)
+        .arg(n as u32)
+        .arg(m1 as u32)
+        .build()
+        .unwrap();
+
+    let k_update = pq.kernel_builder("update_h")
+        .global_work_size((r, n))
+        .arg(&buffer_h)
+        .arg(&buffer_grad)
+        .arg(step)
+        .arg(r as u32)
+        .arg(n as u32)
+        .build()
+        .unwrap();
+
+    for i in 0..iters {
+        let start = Instant::now();
+        println!("whv");
+        unsafe { k_whv.enq().unwrap(); }
+        //pq.finish().unwrap();
+        println!("grad");
+        unsafe { k_grad.enq().unwrap(); }
+        //pq.finish().unwrap();
+        println!("update");
+        unsafe { k_update.enq().unwrap(); }
+        pq.finish().unwrap();
+        println!("iter {}, elapsed: {}s", i, start.elapsed().as_secs());
+    }
+
+    println!("reading...");
+    buffer_h.read(&mut h).enq().unwrap();
+
+    println!("read! cpu");
+    Array2::from_shape_vec((r, n), h).unwrap()
+}
+

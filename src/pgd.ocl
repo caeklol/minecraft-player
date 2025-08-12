@@ -1,0 +1,48 @@
+__kernel void gemm_whv(
+	__global const float* basis,  // m x r
+	__global const float* h,      // r x n
+	__global const float* v,  	  // m x n
+	__global float* whv,          // m x n
+	uint m, uint n, uint r
+) {
+	int row = get_global_id(0);
+	int col = get_global_id(1);
+	if (row < m && col < n) {
+		float sum = 0.0;
+		for (uint k = 0; k < r; k++) {
+			sum += basis[row * r + k] * h[k * n + col];
+		}
+		whv[row * n + col] = sum - v[row * n + col];
+	}
+}
+
+__kernel void gemm_grad(
+	__global const float* basis_t, // r x m
+	__global const float* whv,     // m x n
+	__global float* grad,          // r x n
+	uint r, uint n, uint m
+) {
+	int row = get_global_id(0);
+	int col = get_global_id(1);
+	if (row < r && col < n) {
+		float sum = 0.0;
+		for (uint k = 0; k < m; k++) {
+			sum += basis_t[row * m + k] * whv[k * n + col];
+		}
+		grad[row * n + col] = sum;
+	}
+}
+
+__kernel void update_h(
+	__global float* h,
+	__global const float* grad,
+	float step,
+	uint r, uint n
+) {
+	int row = get_global_id(0);
+	int col = get_global_id(1);
+	if (row < r && col < n) {
+		float new_val = h[row * n + col] - grad[row * n + col] * step;
+		h[row * n + col] = fmax(new_val, 0.0f);
+	}
+}
