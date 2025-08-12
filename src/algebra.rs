@@ -13,12 +13,6 @@ pub fn interpolated_range(a: f32, b: f32, r: usize) -> Vec<f32> {
     (0..r).map(|i| a + i as f32 * step).collect()
 }
 
-pub fn round_to(h: &mut Array2<f32>, decimals: usize) {
-    for val in h.iter_mut() {
-        *val = (*val * 10f32.powi(decimals as i32)).round() / 10f32.powi(decimals as i32)
-    }
-}
-
 pub fn normalize_to_minus_plus(array: &mut Array2<f32>) {
     let min_val = array.iter().cloned().fold(f32::INFINITY, f32::min);
     let max_val = array.iter().cloned().fold(f32::NEG_INFINITY, f32::max);

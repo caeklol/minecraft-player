@@ -7,13 +7,11 @@ __kernel void gemm_whv(
 ) {
 	int row = get_global_id(0);
 	int col = get_global_id(1);
-	if (row < m && col < n) {
-		float sum = 0.0;
-		for (uint k = 0; k < r; k++) {
-			sum += w[row * r + k] * h[k * n + col];
-		}
-		whv[row * n + col] = sum - v[row * n + col];
+	float sum = 0.0;
+	for (uint k = 0; k < r; k++) {
+		sum += w[row * r + k] * h[k * n + col];
 	}
+	whv[row * n + col] = sum - v[row * n + col];
 }
 
 __kernel void gemm_grad(
@@ -24,13 +22,11 @@ __kernel void gemm_grad(
 ) {
 	int row = get_global_id(0);
 	int col = get_global_id(1);
-	if (row < r && col < n) {
-		float sum = 0.0;
-		for (uint k = 0; k < m; k++) {
-			sum += w_t[row * m + k] * whv[k * n + col];
-		}
-		grad[row * n + col] = sum;
+	float sum = 0.0;
+	for (uint k = 0; k < m; k++) {
+		sum += w_t[row * m + k] * whv[k * n + col];
 	}
+	grad[row * n + col] = sum;
 }
 
 __kernel void update_h(
@@ -41,8 +37,6 @@ __kernel void update_h(
 ) {
 	int row = get_global_id(0);
 	int col = get_global_id(1);
-	if (row < r && col < n) {
-		float new_val = h[row * n + col] - grad[row * n + col] * step;
-		h[row * n + col] = fmax(new_val, 0.0f);
-	}
+	float new_val = h[row * n + col] - grad[row * n + col] * step;
+	h[row * n + col] = fmax(new_val, 0.0f);
 }
