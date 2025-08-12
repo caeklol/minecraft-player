@@ -1,3 +1,5 @@
+use crate::algebra;
+
 fn gen_frequency(hz: f32, sample_rate: usize, duration_ms: usize) -> crate::audio::Sound {
     use crate::audio;
     use std::f32::consts::PI;
@@ -21,27 +23,37 @@ fn test_generator() {
 
 #[test]
 fn test_resample() {
-    use crate::audio;
-    let tone = gen_frequency(300.0, 44100, 50);
-    let resampled_sound = audio::resample(&tone);
-    assert_eq!(resampled_sound.samples.len(), 2400);
+    let mut tone = gen_frequency(300.0, 44100, 50);
+    tone.resample(48000);
+    assert_eq!(tone.samples.len(), 2400);
 }
 
 #[test]
 fn test_firsttick() {
-    use crate::audio;
     let tone = gen_frequency(300.0, 44100, 50);
-    let first_tick = audio::first_tick(&tone).expect("first tick returned None on exactly 1 tick of audio");
+    let mut binding = tone.clone();
+    let first_tick = binding.first_tick();
     assert_eq!(first_tick.samples.len(), tone.samples.len(), "first_tick changed sample length");
     assert_eq!(first_tick.sample_rate, tone.sample_rate, "first_tick changed sample rate");
 }
 
 #[test]
 fn test_pitch() {
-    use crate::audio;
-    let tone = gen_frequency(300.0, 48000, 50);
+    let mut tone = gen_frequency(300.0, 48000, 50);
     let original = tone.samples.len();
 
-    let resampled_sound = audio::adjust_pitch(&tone, 0.5);
+    let resampled_sound = tone.adjust_pitch(0.5);
     assert_eq!(resampled_sound.samples.len(), original * 2);
+}
+
+#[test]
+fn test_layout() {
+    let matrix = vec![
+        vec![1.0, 2.0, 3.0],
+        vec![4.0, 5.0, 6.0]
+    ];
+    let matrix_ndarray = algebra::matrix_from_vecs(matrix.clone()).unwrap();
+    let flattened: Vec<f32> = matrix.into_iter().flatten().collect();
+    let ndarray_vec: Vec<f32> = matrix_ndarray.iter().cloned().collect();
+    assert!(flattened.iter().partial_cmp(&ndarray_vec).expect("failed to compare").is_eq());
 }
