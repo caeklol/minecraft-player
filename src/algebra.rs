@@ -110,8 +110,8 @@ pub fn cpu_pgd_nnls(
 }
 
 pub fn pgd_nnls(
-    data: ArrayView2<f32>,
-    basis: ArrayView2<f32>,
+    data: Array2<f32>,
+    basis: Array2<f32>,
     iters: usize,
     step: f32,
 ) -> Array2<f32> {
@@ -120,20 +120,10 @@ pub fn pgd_nnls(
 
     assert_eq!(m1, m2);
 
-    // row-major
-    let v: Vec<f32> = data.iter().cloned().collect();
-    let w: Vec<f32> = basis.iter().cloned().collect();
-    let mut h: Vec<f32> = vec![0.0; r * n];
+    
 
-    let mut w_t = vec![0.0f32; r * m1];
-    for i in 0..m1 {
-        for j in 0..r {
-            w_t[j * m1 + i] = basis[(i, j)];
-        }
-    }
-
-    let ts_row = 32;
-    let ts_col = 8;
+    let ts_row = 2;
+    let ts_col = 64;
 
     let kernel = KERNEL.lines()
         .map(|line| {
@@ -148,21 +138,28 @@ pub fn pgd_nnls(
         .map(|line| line + "\n")
         .collect::<String>();
 
-    println!("{}", kernel);
-
     let pq = ProQue::builder()
         .src(kernel)
         .dims((r.max(m1), n))
         .build()
         .unwrap();
 
+    let basis: Vec<f32> = basis.into_iter().collect();
+
     let buffer_w = Buffer::<f32>::builder()
         .queue(pq.queue().clone())
         .flags(ocl::flags::MEM_READ_ONLY)
-        .len(w.len())
-        .copy_host_slice(&w)
+        .len(basis.len())
+        .copy_host_slice(&basis)
         .build()
         .unwrap();
+
+    let mut w_t = vec![0.0f32; r * m1];
+    for i in 0..r {
+        for j in 0..m1 {
+            w_t[j * r + i] = basis[i * m1 + j];
+        }
+    }
 
     let buffer_w_t = Buffer::<f32>::builder()
         .queue(pq.queue().clone())
@@ -171,14 +168,21 @@ pub fn pgd_nnls(
         .copy_host_slice(&w_t)
         .build()
         .unwrap();
+    drop(w_t);
+    drop(basis);
+
+    let data: Vec<f32> = data.into_iter().collect();
 
     let buffer_v = Buffer::<f32>::builder()
         .queue(pq.queue().clone())
         .flags(ocl::flags::MEM_READ_ONLY)
-        .len(v.len())
-        .copy_host_slice(&v)
+        .len(data.len())
+        .copy_host_slice(&data)
         .build()
         .unwrap();
+    drop(data);
+
+    let mut h: Vec<f32> = vec![0.0; r * n];
 
     let buffer_h = Buffer::<f32>::builder()
         .queue(pq.queue().clone())
@@ -247,8 +251,8 @@ pub fn pgd_nnls(
         .build()
         .unwrap();
 
-    for i in 0..iters {
-        let start = Instant::now();
+    for _ in 0..iters {
+        //let start = Instant::now();
         unsafe { k_whv.enq().unwrap(); }
         //pq.finish().unwrap();
         //println!("whv done: {}ms", start.elapsed().as_millis());
@@ -258,15 +262,15 @@ pub fn pgd_nnls(
         //println!("grad: {}ms", start.elapsed().as_millis());
         //let start = Instant::now();
         unsafe { k_update.enq().unwrap(); }
-        pq.finish().unwrap();
+        //pq.finish().unwrap();
         //println!("update: {}ms", start.elapsed().as_millis());
-        println!("iter {}, {}ms", i, start.elapsed().as_millis());
+        //println!("iter {}, {}ms", i, start.elapsed().as_millis());
     }
 
-    println!("reading...");
+    //println!("reading...");
     buffer_h.read(&mut h).enq().unwrap();
 
-    println!("read! cpu");
+    //println!("read! cpu");
     Array2::from_shape_vec((r, n), h).unwrap()
 }
 

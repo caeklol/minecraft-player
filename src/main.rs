@@ -146,7 +146,7 @@ async fn main() -> Result<(), Error> {
 
     let processor = audio::Processor::new();
 
-    let sounds = audio::permute_with_pitch(predictable_sounds, 4)
+    let sounds = audio::permute_with_pitch(predictable_sounds, 300)
         .into_par_iter()
         .map(|(id, mut sound)| (id, sound.mel(&processor).clone()))
         .collect::<Vec<((String, f32), Sound)>>();
@@ -200,6 +200,14 @@ async fn main() -> Result<(), Error> {
 
     drop(target_audio);
 
+    let sound_bins_clone = match &args.reconstruction {
+        Some(_) => {
+            println!("preparing for reconstruction...");
+            Some(&sound_bins.clone())
+        },
+        None => None // drop
+    };
+
     let start = Instant::now();
     let mut chunks = algebra::matrix_from_vecs(chunks)?
         .reversed_axes();
@@ -212,7 +220,7 @@ async fn main() -> Result<(), Error> {
 
     println!("running NNLS...");
 
-    let mut approximation = algebra::pgd_nnls(chunks.view(), sound_bins.view(), 10, 1e-6);
+    let mut approximation = algebra::pgd_nnls(chunks, sound_bins, 128, 1e-6);
 
     algebra::normalize_to_global(&mut approximation);
 
@@ -232,17 +240,11 @@ async fn main() -> Result<(), Error> {
         None => None,
     };
 
-    let sound_bins = match &args.reconstruction {
-        Some(_) => Some(&sound_bins),
-        None => None // drop
-    };
-
-    
     for (index, amplitudes) in approximation.axis_iter(Axis(1)).enumerate() {
         let mut amplitudes: Vec<(usize, (&f32, &(String, f32)))> = amplitudes.iter().zip(&sound_ids).enumerate().collect();
         amplitudes.sort_by(|a, b| b.1.0.partial_cmp(a.1.0).unwrap());
 
-        let amplitudes = &amplitudes[0..64];
+        let amplitudes = &amplitudes[0..80];
         let mut output = String::new();
         output.push_str("stopsound @a[tag=!nomusic] record\n");
         let mut current_sample = vec![0.0; 2400];
@@ -252,7 +254,7 @@ async fn main() -> Result<(), Error> {
 
             if writer.is_some() {
                 let mut sound = Sound {
-                    samples: sound_bins.unwrap().column(*i).to_vec(),
+                    samples: sound_bins_clone.unwrap().column(*i).to_vec(),
                     sample_rate: 48000
                 };
 
