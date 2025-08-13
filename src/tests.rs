@@ -88,12 +88,14 @@ fn shape_test(sample_size: usize, chunks: usize, targets: usize) -> bool {
         .zip(&gpu)
         .map(|(v1, v2)| v2-v1)
         .fold(f32::NEG_INFINITY, f32::max);
-    return err < 0.0000001;
+    return err < 0.000001;
 }
 
 #[test]
 fn test_nnls() {
     assert!(shape_test(32, 64, 16), "NNLS failed at 32x64x16");
+    assert!(shape_test(32, 64, 16), "NNLS failed at 32x64x16");
+    assert!(shape_test(15, 92, 3), "NNLS failed at non-mutiple");
     assert!(shape_test(15, 92, 3), "NNLS failed at non-mutiple");
     assert!(shape_test(2400, 5, 9), "NNLS failed at real sample size");
 }

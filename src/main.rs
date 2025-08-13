@@ -146,7 +146,7 @@ async fn main() -> Result<(), Error> {
 
     let processor = audio::Processor::new();
 
-    let sounds = audio::permute_with_pitch(predictable_sounds, 64)
+    let sounds = audio::permute_with_pitch(predictable_sounds, 4)
         .into_par_iter()
         .map(|(id, mut sound)| (id, sound.mel(&processor).clone()))
         .collect::<Vec<((String, f32), Sound)>>();
