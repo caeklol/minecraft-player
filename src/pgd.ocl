@@ -1,4 +1,5 @@
-#define TS 16
+#define TS_ROW 32
+#define TS_COL 8
 
 __kernel void gemm_whv(
 	__global const float* w,      // m x r
@@ -17,18 +18,18 @@ __kernel void gemm_whv(
 
 	const int row = get_local_id(0);
     const int col = get_local_id(1);
-    const int globalRow = TS*get_group_id(0) + row;
-    const int globalCol = TS*get_group_id(1) + col;
+    const int globalRow = TS_ROW*get_group_id(0) + row;
+    const int globalCol = TS_COL*get_group_id(1) + col;
 
 	float sum = 0.0;
 
-	__local float wsub[TS][TS];
-	__local float hsub[TS][TS];
+	__local float wsub[TS_ROW][TS_COL];
+	__local float hsub[TS_ROW][TS_COL];
 
-	const int numTiles = (r + TS - 1) / TS;
+	const int numTiles = (r + TS_COL - 1) / TS_COL;
 	for (int t = 0; t < numTiles; t++) {
-		const int tiledRow = TS*t + row;
-		const int tiledCol = TS*t + col;
+		const int tiledRow = TS_COL*t + row;
+		const int tiledCol = TS_COL*t + col;
 
 		if (globalRow < m && tiledCol < r) {
             wsub[row][col] = w[globalRow * r + tiledCol];
@@ -45,7 +46,7 @@ __kernel void gemm_whv(
 
 		barrier(CLK_LOCAL_MEM_FENCE);
 
-		for (int k = 0; k < TS; k++) {
+		for (int k = 0; k < TS_COL; k++) {
 			// no bounds check because 0*0 = 0
 			sum += wsub[row][k] * hsub[k][col];
 		}
@@ -69,18 +70,18 @@ __kernel void gemm_grad(
 	//int col = get_global_id(1);
 	const int row = get_local_id(0);
     const int col = get_local_id(1);
-    const int globalRow = TS*get_group_id(0) + row;
-    const int globalCol = TS*get_group_id(1) + col;
+    const int globalRow = TS_ROW*get_group_id(0) + row;
+    const int globalCol = TS_COL*get_group_id(1) + col;
 
 	float sum = 0.0;
 
-	__local float w_tsub[TS][TS];
-	__local float whvsub[TS][TS];
+	__local float w_tsub[TS_ROW][TS_COL];
+	__local float whvsub[TS_ROW][TS_COL];
 
-	const int numTiles = (m + TS - 1) / TS;
+	const int numTiles = (m + TS_COL - 1) / TS_COL;
 	for (int t = 0; t < numTiles; t++) {
-		const int tiledRow = TS*t + row;
-		const int tiledCol = TS*t + col;
+		const int tiledCol = TS_COL * t + col;
+		const int tiledRow = TS_COL * t + row;
 
 		if (globalRow < r && tiledCol < m) {
             w_tsub[row][col] = w_t[globalRow * m + tiledCol];
@@ -97,7 +98,7 @@ __kernel void gemm_grad(
 
 		barrier(CLK_LOCAL_MEM_FENCE);
 
-		for (int k = 0; k < TS; k++) {
+		for (int k = 0; k < TS_COL; k++) {
 			// no bounds check because 0*0 = 0
 			sum += w_tsub[row][k] * whvsub[k][col];
 		}

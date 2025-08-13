@@ -132,7 +132,8 @@ pub fn pgd_nnls(
         }
     }
 
-    let ts = 16;
+    let ts_row = 32;
+    let ts_col = 8;
 
     let pq = ProQue::builder()
         .src(KERNEL)
@@ -184,14 +185,15 @@ pub fn pgd_nnls(
         .unwrap();
 
     let whv_global = (
-        ((m1 + ts - 1) / ts) * ts,
-        ((n + ts - 1) / ts) * ts
+        ((m1 + ts_row - 1) / ts_row) * ts_row,
+        ((n + ts_col - 1) / ts_col) * ts_col
     );
 
     let k_whv = pq.kernel_builder("gemm_whv")
         //.global_work_size((m1, n))
         .global_work_size(whv_global)
-        .local_work_size((ts, ts))
+        //.local_work_size((ts, ts))
+        .local_work_size((ts_row, ts_col))
         .arg(&buffer_w)
         .arg(&buffer_h)
         .arg(&buffer_v)
@@ -203,14 +205,14 @@ pub fn pgd_nnls(
         .unwrap();
 
     let grad_global = (
-        ((r + ts - 1) / ts) * ts,
-        ((n + ts - 1) / ts) * ts
+        ((r + ts_row - 1) / ts_row) * ts_row,
+        ((n + ts_col - 1) / ts_col) * ts_col
     );
 
     let k_grad = pq.kernel_builder("gemm_grad")
         .global_work_size(grad_global)
         //.global_work_size((r, n))
-        .local_work_size((ts, ts))
+        .local_work_size((ts_row, ts_col))
         .arg(&buffer_w_t)
         .arg(&buffer_whv)
         .arg(&buffer_grad)
