@@ -7,13 +7,56 @@ __kernel void gemm_whv(
 	__global float* whv,          // m x n
 	uint m, uint n, uint r
 ) {
-	int row = get_global_id(0);
-	int col = get_global_id(1);
+	//int row = get_global_id(0);
+	//int col = get_global_id(1);
+	//float sum = 0.0;
+	//for (uint k = 0; k < r; k++) {
+	//	sum += w[row * r + k] * h[k * n + col];
+	//}
+	//whv[row * n + col] = sum - v[row * n + col];
+
+	const int row = get_local_id(0);
+    const int col = get_local_id(1);
+    const int globalRow = TS*get_group_id(0) + row;
+    const int globalCol = TS*get_group_id(1) + col;
+
 	float sum = 0.0;
-	for (uint k = 0; k < r; k++) {
-		sum += w[row * r + k] * h[k * n + col];
+
+	__local float wsub[TS][TS];
+	__local float hsub[TS][TS];
+
+	const int numTiles = (r + TS - 1) / TS;
+	for (int t = 0; t < numTiles; t++) {
+		const int tiledRow = TS*t + row;
+		const int tiledCol = TS*t + col;
+
+		if (globalRow < m && tiledCol < r) {
+            wsub[row][col] = w[globalRow * r + tiledCol];
+        } else {
+            wsub[row][col] = 0.0f;
+        }
+
+        if (tiledRow < r && globalCol < n) {
+            hsub[row][col] = h[tiledRow * n + globalCol];
+        } else {
+            hsub[row][col] = 0.0f;
+        }
+
+
+		barrier(CLK_LOCAL_MEM_FENCE);
+
+		for (int k = 0; k < TS; k++) {
+			// no bounds check because 0*0 = 0
+			sum += wsub[row][k] * hsub[k][col];
+		}
+
+		barrier(CLK_LOCAL_MEM_FENCE);
 	}
-	whv[row * n + col] = sum - v[row * n + col];
+
+	if (globalRow < m && globalCol < n) {
+		int idx = globalRow * n + globalCol;
+		whv[idx] = sum - v[idx];
+	}
 }
 
 __kernel void gemm_grad(
