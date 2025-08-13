@@ -1,5 +1,5 @@
-#define TS_ROW 32
-#define TS_COL 8
+#define TS_ROW 32 /// REPLACE_WITH_ROW
+#define TS_COL 8 /// REPLACE_WITH_COL
 
 __kernel void gemm_whv(
 	__global const float* w,      // m x r
@@ -24,7 +24,7 @@ __kernel void gemm_whv(
 	float sum = 0.0;
 
 	__local float wsub[TS_ROW][TS_COL];
-	__local float hsub[TS_ROW][TS_COL];
+	__local float hsub[TS_COL][TS_COL];
 
 	const int numTiles = (r + TS_COL - 1) / TS_COL;
 	for (int t = 0; t < numTiles; t++) {
@@ -37,12 +37,14 @@ __kernel void gemm_whv(
             wsub[row][col] = 0.0f;
         }
 
-        if (tiledRow < r && globalCol < n) {
-            hsub[row][col] = h[tiledRow * n + globalCol];
-        } else {
-            hsub[row][col] = 0.0f;
-        }
-
+		for (int i = row; i < TS_COL; i += TS_ROW) {
+			int hRow = TS_COL * t + i;
+			if (hRow < r && globalCol < n) {
+				hsub[i][col] = h[hRow * n + globalCol];
+			} else {
+				hsub[i][col] = 0.0f;
+			}
+		}
 
 		barrier(CLK_LOCAL_MEM_FENCE);
 
@@ -76,7 +78,7 @@ __kernel void gemm_grad(
 	float sum = 0.0;
 
 	__local float w_tsub[TS_ROW][TS_COL];
-	__local float whvsub[TS_ROW][TS_COL];
+	__local float whvsub[TS_COL][TS_COL];
 
 	const int numTiles = (m + TS_COL - 1) / TS_COL;
 	for (int t = 0; t < numTiles; t++) {
@@ -88,13 +90,15 @@ __kernel void gemm_grad(
         } else {
             w_tsub[row][col] = 0.0f;
         }
-
-        if (tiledRow < m && globalCol < n) {
-            whvsub[row][col] = whv[tiledRow * n + globalCol];
-        } else {
-            whvsub[row][col] = 0.0f;
-        }
-
+		
+		for (int i = row; i < TS_COL; i += TS_ROW) {
+			int wvRow = TS_COL * t + i;
+			if (wvRow < m && globalCol < n) {
+				whvsub[i][col] = whv[wvRow * n + globalCol];
+			} else {
+				whvsub[i][col] = 0.0f;
+			}
+		}
 
 		barrier(CLK_LOCAL_MEM_FENCE);
 

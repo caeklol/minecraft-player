@@ -135,8 +135,23 @@ pub fn pgd_nnls(
     let ts_row = 32;
     let ts_col = 8;
 
+    let kernel = KERNEL.lines()
+        .map(|line| {
+            if line.contains("/// REPLACE_WITH_COL") {
+                format!("#define TS_COL {}", ts_col)
+            } else if line.contains("/// REPLACE_WITH_ROW") {
+                format!("#define TS_ROW {}", ts_row)
+            } else {
+                line.to_string()
+            }
+        })
+        .map(|line| line + "\n")
+        .collect::<String>();
+
+    println!("{}", kernel);
+
     let pq = ProQue::builder()
-        .src(KERNEL)
+        .src(kernel)
         .dims((r.max(m1), n))
         .build()
         .unwrap();
