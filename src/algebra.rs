@@ -132,6 +132,8 @@ pub fn pgd_nnls(
         }
     }
 
+    let ts = 16;
+
     let pq = ProQue::builder()
         .src(KERNEL)
         .dims((r.max(m1), n))
@@ -181,8 +183,14 @@ pub fn pgd_nnls(
         .build()
         .unwrap();
 
+    let whv_global = (
+        ((m1 + ts - 1) / ts) * ts,
+        ((n + ts - 1) / ts) * ts
+    );
+
     let k_whv = pq.kernel_builder("gemm_whv")
         .global_work_size((m1, n))
+        //.global_work_size(whv_global)
         .arg(&buffer_w)
         .arg(&buffer_h)
         .arg(&buffer_v)
@@ -193,8 +201,17 @@ pub fn pgd_nnls(
         .build()
         .unwrap();
 
+    let grad_global = (
+        ((r + ts - 1) / ts) * ts,
+        ((n + ts - 1) / ts) * ts
+    );
+
+    println!("global: {:?}", grad_global);
+    println!("global rounded: {:?}", (r, n));
     let k_grad = pq.kernel_builder("gemm_grad")
-        .global_work_size((r, n))
+        .global_work_size(grad_global)
+        //.global_work_size((r, n))
+        .local_work_size((16, 16))
         .arg(&buffer_w_t)
         .arg(&buffer_whv)
         .arg(&buffer_grad)
@@ -227,7 +244,7 @@ pub fn pgd_nnls(
         unsafe { k_update.enq().unwrap(); }
         pq.finish().unwrap();
         println!("update: {}ms", start.elapsed().as_millis());
-        println!("iter {}, elapsed: {}ms", i, start.elapsed().as_millis());
+        println!("iter {}", i);
     }
 
     println!("reading...");
