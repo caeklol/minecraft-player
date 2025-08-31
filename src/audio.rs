@@ -11,6 +11,7 @@ use num_traits::Pow;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rustfft::{num_complex::{Complex, Complex32, Complex64}, Fft, FftPlanner};
 pub use time_as_samples;
+use tracing::{event, instrument, span, Level};
 
 use crate::algebra;
 
@@ -137,6 +138,8 @@ impl Sound {
     /// reconstruction rather than bass (drums, etc) which our ears are
     /// more sensitive to
     pub fn mel(&mut self, processor: &Processor) -> &mut Self {
+        let _span = span!(Level::DEBUG, "mel").entered();
+
         let mut spectrum = processor.fft(self.clone());
 
         for bin in spectrum.iter_mut() {
@@ -190,6 +193,8 @@ impl Processor {
     }
 
     pub fn fft(&self, sound: Sound) -> Vec<FftBin> {
+        let _span = span!(Level::DEBUG, "fft", tag = "audio").entered();
+
         let length = sound.samples.len();
         let mut buffer = Vec::with_capacity(length);
 
@@ -208,7 +213,7 @@ impl Processor {
         let fft = match self.fft_cache.get(&length) {
             Some(fft) => fft,
             None => {
-                println!("cache miss, {} sample size, {} sample rate", length, sound.sample_rate);
+                event!(Level::DEBUG, "cache miss, {} sample size, {} sample rate", length, sound.sample_rate);
                 &FftPlanner::new().plan_fft_forward(length)
             },
         };
@@ -227,15 +232,16 @@ impl Processor {
         bins
     }
 
-
     pub fn ifft(&self, spectrum: Vec<FftBin>) -> Vec<f32> {
+        let _span = span!(Level::DEBUG, "ifft", tag = "audio").entered();
+
         let mut buffer = spectrum.iter().map(|f| f.complex).collect::<Vec<Complex32>>();
         let length = buffer.len();
 
         let ifft = match self.ifft_cache.get(&length) {
             Some(ifft) => ifft,
             None => {
-                println!("cache miss, inverse, {} sample size", length);
+                event!(Level::DEBUG, "cache miss, {} sample size", length);
                 &FftPlanner::new().plan_fft_inverse(length)
             },
         };

@@ -1,12 +1,14 @@
 extern crate ocl;
-use std::{collections::HashMap, path::PathBuf, time::Instant};
+use std::{collections::HashMap, ffi::OsStr, path::PathBuf, time::Instant};
 
 use anyhow::{Error, anyhow};
 use clap::Parser;
 use inquire::Select;
-use minecraft_player::{algebra::{self}, assets::{self, AudioResourceLocation, FetchBehavior}, audio::{self, Sound}, mojang::{self, AssetIndex, Version}};
+use minecraft_player::{algebra::{self}, assets::{self, AudioResourceLocation, FetchBehavior}, audio::{self, Sound}, logging::{self, Verbosity}, mojang::{self, AssetIndex, Version}};
 use ndarray::Axis;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use tracing::{event, info, instrument, level_filters::LevelFilter, span, Level};
+use colored::*;
 
 #[derive(clap::Args, Debug)]
 #[group(required = false, multiple = false)]
@@ -38,13 +40,14 @@ struct Args {
 
     #[arg(long, help = "output reconstruction as `.wav`")]
     reconstruction: Option<PathBuf>,
+
+    #[arg(long, help = "verbosity of logging", default_value = "normal")]
+    verbosity: Verbosity
 }
 
-
 async fn find_version(target_version: &Option<String>) -> Result<Version, Error> {
-    println!("fetching version manifest...");
+    event!(Level::INFO, "fetching version manifest");
     let manifest = mojang::fetch_version_manifest().await?;
-    println!("fetched version manifest");
 
     match target_version {
         Some(version_str) => {
@@ -56,7 +59,7 @@ async fn find_version(target_version: &Option<String>) -> Result<Version, Error>
             }
 
             if possible_versions.is_empty() {
-                println!("could not find a matching version to `{}`", version_str);
+                event!(Level::INFO, "could not find a matching version to `{}`", version_str);
             } else if possible_versions.len() > 1 {
                 println!("multiple matching versions to `{}`", version_str);
                 return Ok(Select::new("what version will you use?", possible_versions).prompt().unwrap().clone())
@@ -79,7 +82,7 @@ async fn fetch_predictable_sounds(
     
     let asset_index = match behavior {
         FetchBehavior::FetchIfMissing | FetchBehavior::Refetch => {
-            println!("fetching asset index...");
+            event!(Level::INFO, "fetching asset index");
             mojang::fetch_asset_index(&version).await?
         },
         FetchBehavior::CacheOnly => AssetIndex {
@@ -87,10 +90,10 @@ async fn fetch_predictable_sounds(
         },
     };
 
-    println!("fetching sound definitions...");
+    event!(Level::INFO, "fetching sound definitions");
     let definitions = assets::fetch_sound_definitions(&assets, &version, &behavior, &asset_index).await?;
 
-    println!("fetching sounds...");
+    event!(Level::INFO, "fetching sounds");
     let sounds = assets::fetch_sounds(&assets, &version, &behavior, &asset_index).await?;
 
     let mut result = HashMap::new();
@@ -132,6 +135,9 @@ async fn fetch_predictable_sounds(
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
+    logging::setup(args.verbosity)?;
+
+    let _span = span!(Level::INFO, "main", tag = "main").entered();
 
     let behavior = match (args.behavior.refetch, args.behavior.local) {
         (true, false) => FetchBehavior::Refetch,
@@ -140,13 +146,15 @@ async fn main() -> Result<(), Error> {
         _ => unimplemented!("impossible")
     };
 
+    info!("loading predictable sounds");
+
     let predictable_sounds = fetch_predictable_sounds(&args.target_version, &args.assets, &behavior).await?;
 
-    println!("found {} predictable sounds", predictable_sounds.len());
+    event!(Level::INFO, "found {} predictable sounds", predictable_sounds.len());
 
     let processor = audio::Processor::new();
 
-    let sounds = audio::permute_with_pitch(predictable_sounds, 300)
+    let sounds = audio::permute_with_pitch(predictable_sounds, 32)
         .into_par_iter()
         .map(|(id, mut sound)| (id, sound.mel(&processor).clone()))
         .collect::<Vec<((String, f32), Sound)>>();
@@ -160,14 +168,14 @@ async fn main() -> Result<(), Error> {
 
     drop(sounds);
 
-    println!("reading target file");
+    event!(Level::INFO, "reading target file");
     let mut reader = hound::WavReader::open(&args.input)?;
 
     if reader.spec().channels > 1 {
-        eprintln!("!! ERROR: stereo audio is not supported! please convert your input file into mono:");
+        event!(Level::ERROR, "stereo audio is not supported! please convert your input file into mono:");
         let input_filename: &str = args.input.file_stem().unwrap().to_str().unwrap();
-        println!("help: if you have ffmpeg installed:");
-        println!("help: ffmpeg -i {}.wav -ac 1 {}.mono.wav", input_filename, input_filename);
+        event!(Level::ERROR, help = true, "if you have ffmpeg installed:");
+        event!(Level::ERROR, help = true, "ffmpeg -i {}.wav -ac 1 {}.mono.wav", input_filename, input_filename);
         return Err(anyhow!("input was stereo"));
     }
 
@@ -185,7 +193,7 @@ async fn main() -> Result<(), Error> {
         sample_rate
     };
 
-    println!("resampling input");
+    event!(Level::INFO, "resampling input");
     target_audio.resample(48000);
 
     let chunks = target_audio.samples.chunks_exact(2400).collect::<Vec<&[f32]>>()
@@ -202,33 +210,34 @@ async fn main() -> Result<(), Error> {
 
     let sound_bins_clone = match &args.reconstruction {
         Some(_) => {
-            println!("preparing for reconstruction...");
-            Some(&sound_bins.clone())
+            event!(Level::WARN, "cloning sound_bins for usage in later reconstruction, which will spike memory");
+            event!(Level::WARN, "if this crashes, disable reconstruction");
+            Some(sound_bins.clone())
         },
-        None => None // drop
+        None => None
     };
 
     let start = Instant::now();
     let mut chunks = algebra::matrix_from_vecs(chunks)?
         .reversed_axes();
 
-    println!("chunks: {:?}", &chunks.dim());
-    println!("bins: {:?}", &sound_bins.dim());
+    event!(Level::DEBUG, "chunks: {:?}", &chunks.dim());
+    event!(Level::DEBUG, "bins: {:?}", &sound_bins.dim());
 
     algebra::normalize_to_minus_plus(&mut chunks);
     algebra::normalize_to_minus_plus(&mut sound_bins);
 
-    println!("running NNLS...");
+    event!(Level::INFO, "running NNLS...");
 
     let mut approximation = algebra::pgd_nnls(chunks, sound_bins, 128, 1e-6);
 
     algebra::normalize_to_global(&mut approximation);
 
-    println!("done! elapsed: {}ms", start.elapsed().as_millis());
+    event!(Level::INFO, "done! elapsed: {}ms", start.elapsed().as_millis());
 
     
 
-    println!("saving to datapack...");
+    event!(Level::INFO, "saving to datapack...");
 
     let mut writer = match &args.reconstruction {
         Some(output_path) => Some(hound::WavWriter::create(output_path, hound::WavSpec {
@@ -254,7 +263,7 @@ async fn main() -> Result<(), Error> {
 
             if writer.is_some() {
                 let mut sound = Sound {
-                    samples: sound_bins_clone.unwrap().column(*i).to_vec(),
+                    samples: sound_bins_clone.as_ref().unwrap().column(*i).to_vec(),
                     sample_rate: 48000
                 };
 

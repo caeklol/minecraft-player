@@ -3,6 +3,7 @@ use std::time::Instant;
 use anyhow::Error;
 use ndarray::{Array2, ArrayView2};
 use ocl::{Buffer, ProQue};
+use tracing::{event, span, Level};
 
 static KERNEL: &str = include_str!("pgd.ocl");
 
@@ -115,12 +116,12 @@ pub fn pgd_nnls(
     iters: usize,
     step: f32,
 ) -> Array2<f32> {
+    let _span = span!(Level::TRACE, "pgd_nnls", "gpu");
+
     let (m1, n) = data.dim();
     let (m2, r) = basis.dim();
 
     assert_eq!(m1, m2);
-
-    
 
     let ts_row = 2;
     let ts_col = 64;
@@ -146,6 +147,7 @@ pub fn pgd_nnls(
 
     let basis: Vec<f32> = basis.into_iter().collect();
 
+    event!(Level::DEBUG, "copying W");
     let buffer_w = Buffer::<f32>::builder()
         .queue(pq.queue().clone())
         .flags(ocl::flags::MEM_READ_ONLY)
@@ -154,12 +156,15 @@ pub fn pgd_nnls(
         .build()
         .unwrap();
 
+    event!(Level::DEBUG, "generating W^T");
     let mut w_t = vec![0.0f32; r * m1];
     for i in 0..r {
         for j in 0..m1 {
             w_t[j * r + i] = basis[i * m1 + j];
         }
     }
+
+    event!(Level::DEBUG, "copying W^T");
 
     let buffer_w_t = Buffer::<f32>::builder()
         .queue(pq.queue().clone())
@@ -173,6 +178,7 @@ pub fn pgd_nnls(
 
     let data: Vec<f32> = data.into_iter().collect();
 
+    event!(Level::DEBUG, "copying V");
     let buffer_v = Buffer::<f32>::builder()
         .queue(pq.queue().clone())
         .flags(ocl::flags::MEM_READ_ONLY)
@@ -184,6 +190,7 @@ pub fn pgd_nnls(
 
     let mut h: Vec<f32> = vec![0.0; r * n];
 
+    event!(Level::DEBUG, "copying h");
     let buffer_h = Buffer::<f32>::builder()
         .queue(pq.queue().clone())
         .len(h.len())
@@ -251,26 +258,26 @@ pub fn pgd_nnls(
         .build()
         .unwrap();
 
-    for _ in 0..iters {
-        //let start = Instant::now();
+    for i in 0..iters {
+        let start = Instant::now();
         unsafe { k_whv.enq().unwrap(); }
-        //pq.finish().unwrap();
-        //println!("whv done: {}ms", start.elapsed().as_millis());
-        //let start = Instant::now();
+        pq.finish().unwrap();
+        event!(Level::TRACE, "whv done: {}ms", start.elapsed().as_millis());
+        let start = Instant::now();
         unsafe { k_grad.enq().unwrap(); }
-        //pq.finish().unwrap();
-        //println!("grad: {}ms", start.elapsed().as_millis());
-        //let start = Instant::now();
+        pq.finish().unwrap();
+        event!(Level::TRACE, "grad: {}ms", start.elapsed().as_millis());
+        let start = Instant::now();
         unsafe { k_update.enq().unwrap(); }
-        //pq.finish().unwrap();
-        //println!("update: {}ms", start.elapsed().as_millis());
-        //println!("iter {}, {}ms", i, start.elapsed().as_millis());
+        pq.finish().unwrap();
+        event!(Level::TRACE, "update: {}ms", start.elapsed().as_millis());
+        event!(Level::TRACE, "iter {}, {}ms", i, start.elapsed().as_millis());
     }
 
-    //println!("reading...");
+    event!(Level::TRACE, "reading...");
     buffer_h.read(&mut h).enq().unwrap();
 
-    //println!("read! cpu");
+    event!(Level::TRACE, "read! cpu");
     Array2::from_shape_vec((r, n), h).unwrap()
 }
 

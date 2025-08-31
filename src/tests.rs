@@ -4,6 +4,7 @@ use ndarray_rand::{rand_distr::Uniform, RandomExt};
 
 use crate::algebra;
 
+#[cfg(test)]
 fn gen_frequency(hz: f32, sample_rate: usize, duration_ms: usize) -> crate::audio::Sound {
     use crate::audio;
     use std::f32::consts::PI;
@@ -62,6 +63,7 @@ fn test_layout() {
     assert!(flattened.iter().partial_cmp(&ndarray_vec).expect("failed to compare").is_eq());
 }
 
+#[cfg(test)]
 fn nnls_test<T: Fn(Array2<f32>, Array2<f32>) -> Array2<f32>>(f: T, target: &Array2<f32>, chunks: &Array2<f32>) -> Result<Vec<f32>, Error> {
     let mut chunks = chunks.clone();
     let mut target = target.clone();
@@ -77,12 +79,13 @@ fn nnls_test<T: Fn(Array2<f32>, Array2<f32>) -> Array2<f32>>(f: T, target: &Arra
     return Ok(Vec::from(approx.as_slice().unwrap()));
 }
 
+#[cfg(test)]
 fn shape_test(sample_size: usize, chunks: usize, targets: usize) -> bool {
     let chunks = Array2::random((sample_size, chunks), Uniform::new(-1.0, 1.0));
     let target = Array2::random((sample_size, targets), Uniform::new(-1.0, 1.0));
 
-    let cpu = nnls_test(|target, chunks| algebra::cpu_pgd_nnls(target.view(), chunks.view(), 400, 1e-6), &target, &chunks).unwrap();
-    let gpu = nnls_test(|target, chunks| algebra::pgd_nnls(target.view(), chunks.view(), 400, 1e-6), &target, &chunks).unwrap();
+    let cpu = nnls_test(|target, chunks| algebra::cpu_pgd_nnls(target, chunks, 400, 1e-6), &target, &chunks).unwrap();
+    let gpu = nnls_test(|target, chunks| algebra::pgd_nnls(target, chunks, 400, 1e-6), &target, &chunks).unwrap();
 
     let err = cpu.iter()
         .zip(&gpu)

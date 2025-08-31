@@ -9,6 +9,7 @@ use futures::StreamExt;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
+use tracing::{event, instrument, span, Level};
 
 use crate::{audio::Sound, mojang::{self, AssetIndex, Object, Version}};
 
@@ -60,6 +61,8 @@ fn visit_dirs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 }
 
 pub async fn fetch_sound_definitions(assets: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<HashMap<String, SoundDefinition>, Error> {
+    let _span = span!(Level::INFO, "fetch_sound_definitions", tag = "assets").entered();
+
     let assets_path = assets.join(PathBuf::from(version.id.clone()));
     let sound_definitions_path = &assets_path.join("sound_definitons.json");
 
@@ -68,8 +71,8 @@ pub async fn fetch_sound_definitions(assets: &PathBuf, version: &Version, behavi
             if fs::try_exists(sound_definitions_path).await? {
                 return Ok(serde_json::from_str(&fs::read_to_string(sound_definitions_path).await?)?)
             } else {
-                eprintln!("cache-only mode specified without a sound definitions (`sound_definitions.json`) file");
-                println!("help: run with refetch or normal fetch behavior");
+                event!(Level::ERROR, "cache-only mode specified without a sound definitions (`sound_definitions.json`) file");
+                event!(Level::ERROR, help = true, "run with refetch or normal fetch behavior");
                 return Err(anyhow!("missing sound_definitions"))
             }
         }
@@ -92,6 +95,10 @@ pub async fn fetch_sound_definitions(assets: &PathBuf, version: &Version, behavi
 
 /// converts all stereo sounds to mono
 pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchBehavior, asset_index: &AssetIndex) -> Result<HashMap<PathBuf, Sound>, Error> {
+    let _span = span!(Level::INFO, "fetch_sounds", tag = "assets").entered();
+
+    event!(Level::INFO, "eggs in the morning with toast");
+
     let mut sound_assets_bytes: HashMap<PathBuf, Bytes> = HashMap::new();
 
     let cache_path = assets.join(PathBuf::from(version.id.clone()));
@@ -110,7 +117,7 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
                 .collect::<HashMap<PathBuf, &Object>>()
         },
         FetchBehavior::FetchIfMissing => {
-            println!("reading local sound assets...");
+            event!(Level::INFO, "reading local sound assets");
             let byte_results = stream::iter(&local_paths)
                 .map(|path| async move {
                     (path, fs::read(path).await)
@@ -126,7 +133,7 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
                         sound_assets_bytes.insert(sound_path.to_path_buf(), bytes.into());
                     },
                     Err(e) => {
-                        eprintln!("failed to read `{:?}`, '{}'", sound_path, e);
+                        event!(Level::WARN, "failed to read `{:?}`, '{}'", sound_path, e);
                     },
                 }
             }
@@ -144,12 +151,12 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
                 .filter(|(key, _)| !local_paths.contains(&cache_path.join(key)))
                 .collect::<HashMap<PathBuf, &Object>>();
 
-            println!("found remote {} assets and {} local assets. fetching {} assets", remote_total, local_paths.len(), sound_objects.len());
+            event!(Level::INFO, "found remote {} assets and {} local assets. fetching {} assets", remote_total, local_paths.len(), sound_objects.len());
 
             sound_objects
         },
         FetchBehavior::CacheOnly => {
-            println!("reading local sound assets...");
+            event!(Level::INFO, "reading local sound assets");
             let byte_results = stream::iter(&local_paths)
                 .map(|path| async move {
                     (path, fs::read(path).await)
@@ -165,7 +172,7 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
                         sound_assets_bytes.insert(sound_path.to_path_buf(), bytes.into());
                     },
                     Err(e) => {
-                        eprintln!("failed to read `{:?}`, '{}'", sound_path, e);
+                        event!(Level::WARN, "failed to read `{:?}`, '{}'", sound_path, e);
                     },
                 }
             }
@@ -175,7 +182,7 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
     };
     
     if !remote_objects.is_empty() {
-        println!("fetching remote assets...");
+        event!(Level::INFO, "fetching remote assets");
 
         let total_requests = Arc::new(AtomicUsize::new(0));
         let errored_requests = Arc::new(AtomicUsize::new(0));
@@ -196,7 +203,7 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
 
                     let errored = errored_requests.load(Ordering::Relaxed);
 
-                    print!("total: {}, errored: {}\r", total, errored);
+                    event!(Level::DEBUG, "total: {}, errored: {}\r", total, errored);
 
                     res
                 }
@@ -216,7 +223,7 @@ pub async fn fetch_sounds(assets: &PathBuf, version: &Version, behavior: &FetchB
                     fs::write(sound_path, bytes).await.expect("failed to write to file");
                 },
                 Err(e) => {
-                    eprintln!("failed to fetch `{:?}`, '{:?}'", sound_path, e);
+                    event!(Level::WARN, "failed to fetch `{:?}`, '{:?}'", sound_path, e);
                 },
             }
         }

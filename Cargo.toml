@@ -12,7 +12,6 @@ futures = "0.3.31"
 hound = "3.5.1"
 inquire = "0.7.5"
 lewton = "0.10.2"
-ndarray = { version = "0.16.1", features = ["matrixmultiply-threading"] }
 ndarray-rand = "0.15.0"
 num-traits = "0.2.19"
 ocl = "0.19.7"
@@ -24,3 +23,8 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.142"
 sha1_smol = "1.0.1"
 tokio = { version = "1.47.1", features = ["full"] }
+ndarray = "0.16.1"
+chrono = "0.4.41"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+colored = "3.0.0"
