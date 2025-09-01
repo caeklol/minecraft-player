@@ -8,8 +8,9 @@ play any sound in vanilla Minecraft without texture packs
 ## usage
 you can use `--help`, but if you like reading:
 ##### `-i, --input`
-specifies input file. this should be in mono. automatically resampled to \
+specifies input file. crashes if stereo. this is automatically resampled to \
 48kHz sampling rate, so it may be faster to do that beforehand
+
 ##### `-o, --output`
 mcfunction files are directly saved here, named by index, starting by 0. \
 each following sound is scheduled via `audio:_/{}`. you should structure your \
@@ -19,7 +20,7 @@ functions folder as such.
 optionally, you can create an audio reconstruction using this parameter. this saves \
 under the WAV format, but `.wav` is not automatically appended to the filename.
 
-##### `--local, -l` / `--refetch, -r`
+##### `-l, --local` / `-r, --refetch`
 this specifies whether to refetch from remote (mojang) or use locally saved assets. \
 this can save a lot of time in dev
 
